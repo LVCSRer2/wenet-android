@@ -1,0 +1,43 @@
+# Build artifacts
+**/build/
+**/.cxx/
+**/.gradle/
+*.apk
+local.properties
+
+# Model files (too large for git)
+*.onnx
+*.onnx.data
+*.zip
+*.pt
+*.tar.gz
+*.model
+!wenet.keystore
+
+# Model directories
+gigaspeech_u2pp_conformer_libtorch_quant/
+20210728_u2pp_conformer_exp/
+onnx_model/
+
+# Exclude all wenet/ except runtime/android and runtime/core
+wenet/*
+!wenet/runtime/
+wenet/runtime/*
+!wenet/runtime/android/
+!wenet/runtime/core/
+
+# Android assets - keep structure, exclude models
+wenet/runtime/android/app/src/main/assets/*.onnx
+wenet/runtime/android/app/src/main/assets/*.zip
+
+# Old wenet-android subfolder
+wenet-android/
+
+# IDE
+.idea/
+*.iml
+.DS_Store
+
+# Python cache
+__pycache__/
+*.pyc

@@ -11,6 +11,7 @@ import android.os.Bundle;
 import android.os.Process;
 import android.util.Log;
 import android.widget.Button;
+import android.widget.ScrollView;
 import android.widget.TextView;
 import android.widget.Toast;
 import androidx.appcompat.app.AppCompatActivity;
@@ -181,6 +182,13 @@ public class MainActivity extends AppCompatActivity {
     return energy;
   }
 
+  private void updateResultAndScroll(String text) {
+    TextView textView = findViewById(R.id.textView);
+    ScrollView scrollView = findViewById(R.id.scrollView);
+    textView.setText(text);
+    scrollView.post(() -> scrollView.fullScroll(ScrollView.FOCUS_DOWN));
+  }
+
   private void startAsrThread() {
     new Thread(() -> {
       // Send all data
@@ -190,10 +198,8 @@ public class MainActivity extends AppCompatActivity {
           // 1. add data to C++ interface
           Recognize.acceptWaveform(data);
           // 2. get partial result
-          runOnUiThread(() -> {
-            TextView textView = findViewById(R.id.textView);
-            textView.setText(Recognize.getResult());
-          });
+          String result = Recognize.getResult();
+          runOnUiThread(() -> updateResultAndScroll(result));
         } catch (InterruptedException e) {
           Log.e(LOG_TAG, e.getMessage());
         }
@@ -203,10 +209,8 @@ public class MainActivity extends AppCompatActivity {
       while (true) {
         // get result
         if (!Recognize.getFinished()) {
-          runOnUiThread(() -> {
-            TextView textView = findViewById(R.id.textView);
-            textView.setText(Recognize.getResult());
-          });
+          String result = Recognize.getResult();
+          runOnUiThread(() -> updateResultAndScroll(result));
         } else {
           runOnUiThread(() -> {
             Button button = findViewById(R.id.button);

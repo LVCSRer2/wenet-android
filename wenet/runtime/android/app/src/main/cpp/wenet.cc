@@ -112,7 +112,7 @@ void decode_thread_func() {
       break;
     } else if (state == kEndpoint) {
       LOG(INFO) << "wenet endpoint final result: " << result;
-      total_result += result + "，";
+      total_result += result + "\n";
       decoder->ResetContinuousDecoding();
     } else {
       if (decoder->DecodedSomething()) {

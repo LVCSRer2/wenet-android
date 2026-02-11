@@ -4,6 +4,7 @@ import android.Manifest;
 import android.content.ClipData;
 import android.content.ClipboardManager;
 import android.content.Context;
+import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.content.res.AssetManager;
 import android.graphics.Color;
@@ -187,6 +188,9 @@ public class MainActivity extends AppCompatActivity {
         startRecordThread();
         startAsrThread();
         Recognize.startDecode();
+        Intent serviceIntent = new Intent(this, RecordingForegroundService.class);
+        serviceIntent.setAction(RecordingForegroundService.ACTION_START);
+        ContextCompat.startForegroundService(this, serviceIntent);
         button.setText("Stop Record");
       } else {
         startRecord = false;
@@ -349,6 +353,7 @@ public class MainActivity extends AppCompatActivity {
         } else {
           // Save result.json with timed result
           saveTimedResult();
+          stopService(new Intent(MainActivity.this, RecordingForegroundService.class));
           final String recordingName = currentRecordingName;
           runOnUiThread(() -> {
             Button button = findViewById(R.id.button);

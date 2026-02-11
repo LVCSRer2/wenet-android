@@ -98,7 +98,7 @@ echo ""
 echo "=== 4단계: 모델 파일 준비 ==="
 
 # assets 디렉토리에서 모델 파일 정리
-rm -f "$ASSETS_DIR/final.zip" "$ASSETS_DIR/encoder.onnx" "$ASSETS_DIR/ctc.onnx" "$ASSETS_DIR/decoder.onnx"
+rm -f "$ASSETS_DIR/final.zip" "$ASSETS_DIR/encoder.onnx" "$ASSETS_DIR/ctc.onnx"
 
 LIBTORCH_MODEL_DIR="$WORK_DIR/gigaspeech_u2pp_conformer_libtorch_quant"
 ONNX_MODEL_DIR="$WORK_DIR/onnx_model"
@@ -121,10 +121,8 @@ elif [ "$BACKEND" = "onnxruntime" ] || [ "$BACKEND" = "onnxruntime-nnapi" ]; the
   fi
   cp "$ONNX_MODEL_DIR/encoder.quant.onnx" "$ASSETS_DIR/encoder.onnx"
   cp "$ONNX_MODEL_DIR/ctc.quant.onnx" "$ASSETS_DIR/ctc.onnx"
-  cp "$ONNX_MODEL_DIR/decoder.quant.onnx" "$ASSETS_DIR/decoder.onnx"
   echo "  assets ← encoder.onnx (quantized, $(du -h "$ASSETS_DIR/encoder.onnx" | cut -f1))"
   echo "  assets ← ctc.onnx (quantized, $(du -h "$ASSETS_DIR/ctc.onnx" | cut -f1))"
-  echo "  assets ← decoder.onnx (quantized, $(du -h "$ASSETS_DIR/decoder.onnx" | cut -f1))"
 fi
 echo "  assets ← units.txt"
 

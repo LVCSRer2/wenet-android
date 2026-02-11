@@ -79,6 +79,10 @@ void init(JNIEnv* env, jobject, jstring jModelDir) {
 
   decode_config = std::make_shared<DecodeOptions>();
   decode_config->chunk_size = 16;
+#if defined(USE_ONNX) || defined(USE_NNAPI)
+  decode_config->rescoring_weight = 0.0;
+  decode_config->ctc_weight = 1.0;
+#endif
   decoder =
       std::make_shared<AsrDecoder>(feature_pipeline, resource, *decode_config);
 }

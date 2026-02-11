@@ -38,7 +38,7 @@ public class MainActivity extends AppCompatActivity {
     if ("libtorch".equals(BuildConfig.BACKEND)) {
       resource = Arrays.asList("final.zip", "units.txt");
     } else {
-      resource = Arrays.asList("encoder.onnx", "ctc.onnx", "decoder.onnx", "units.txt");
+      resource = Arrays.asList("encoder.onnx", "ctc.onnx", "units.txt");
     }
   }
 

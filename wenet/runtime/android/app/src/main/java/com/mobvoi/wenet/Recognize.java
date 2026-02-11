@@ -13,4 +13,5 @@ public class Recognize {
   public static native boolean getFinished();
   public static native void startDecode();
   public static native String getResult();
+  public static native String getTimedResult();
 }

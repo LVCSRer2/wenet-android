@@ -28,7 +28,8 @@
         android:layout_height="wrap_content"
         android:padding="8dp"
         android:text=""
-        android:textSize="22sp" />
+        android:textSize="22sp"
+        android:linksClickable="true" />
 
     </ScrollView>
 
@@ -41,10 +42,47 @@
       VoiceRect:RectOffset="0"
       VoiceRect:RectSpeed="300"
       VoiceRect:RectTopColor="@color/green"
-      app:layout_constraintBottom_toTopOf="@+id/button"
+      app:layout_constraintBottom_toTopOf="@+id/playbackLayout"
       app:layout_constraintEnd_toEndOf="parent"
       app:layout_constraintStart_toStartOf="parent"
       app:layout_constraintTop_toBottomOf="@+id/textView" />
+
+    <LinearLayout
+      android:id="@+id/playbackLayout"
+      android:layout_width="0dp"
+      android:layout_height="wrap_content"
+      android:orientation="horizontal"
+      android:gravity="center_vertical"
+      android:paddingStart="8dp"
+      android:paddingEnd="8dp"
+      android:visibility="gone"
+      app:layout_constraintBottom_toTopOf="@+id/button"
+      app:layout_constraintStart_toStartOf="parent"
+      app:layout_constraintEnd_toEndOf="parent">
+
+      <Button
+        android:id="@+id/playPauseButton"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="Play"
+        android:minWidth="80dp" />
+
+      <SeekBar
+        android:id="@+id/seekBar"
+        android:layout_width="0dp"
+        android:layout_height="wrap_content"
+        android:layout_weight="1"
+        android:layout_marginStart="8dp"
+        android:layout_marginEnd="8dp" />
+
+      <TextView
+        android:id="@+id/timeTextView"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="0:00/0:00"
+        android:textSize="12sp" />
+
+    </LinearLayout>
 
     <Button
       android:id="@+id/button"
@@ -52,8 +90,23 @@
       android:layout_height="wrap_content"
       android:text="Button"
       app:layout_constraintBottom_toBottomOf="parent"
-      app:layout_constraintEnd_toEndOf="parent"
-      app:layout_constraintHorizontal_bias="1.0"
+      app:layout_constraintEnd_toStartOf="@+id/recordingsButton"
       app:layout_constraintStart_toStartOf="parent" />
+
+    <Button
+      android:id="@+id/recordingsButton"
+      android:layout_width="wrap_content"
+      android:layout_height="wrap_content"
+      android:text="Recordings"
+      app:layout_constraintBottom_toBottomOf="parent"
+      app:layout_constraintEnd_toStartOf="@+id/copyButton" />
+
+    <Button
+      android:id="@+id/copyButton"
+      android:layout_width="wrap_content"
+      android:layout_height="wrap_content"
+      android:text="Copy"
+      app:layout_constraintBottom_toBottomOf="parent"
+      app:layout_constraintEnd_toEndOf="parent" />
 
 </androidx.constraintlayout.widget.ConstraintLayout>

@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 #include <jni.h>
+#include <cstdio>
 #include <thread>
 
 #include "decoder/asr_decoder.h"
@@ -37,6 +38,20 @@ std::shared_ptr<AsrDecoder> decoder;
 std::shared_ptr<DecodeResource> resource;
 DecodeState state = kEndBatch;
 std::string total_result;  // NOLINT
+std::string timed_result_json;  // JSON array of {w, s, e}
+int total_samples = 0;
+int endpoint_start_sample = 0;
+const int kSampleRate = 16000;
+
+// Format samples to "MM:SS.S"
+std::string FormatTime(int samples) {
+  float sec = static_cast<float>(samples) / kSampleRate;
+  int min = static_cast<int>(sec) / 60;
+  float s = sec - min * 60;
+  char buf[16];
+  snprintf(buf, sizeof(buf), "%02d:%04.1f", min, s);
+  return std::string(buf);
+}
 
 void init(JNIEnv* env, jobject, jstring jModelDir) {
   const char* pModelDir = env->GetStringUTFChars(jModelDir, nullptr);
@@ -69,6 +84,7 @@ void init(JNIEnv* env, jobject, jstring jModelDir) {
   resource->model = model;
   resource->symbol_table =
       std::shared_ptr<fst::SymbolTable>(fst::SymbolTable::ReadText(dictPath));
+  resource->unit_table = resource->symbol_table;
   LOG(INFO) << "dict path: " << dictPath;
 
   PostProcessOptions post_process_opts;
@@ -92,18 +108,53 @@ void reset(JNIEnv* env, jobject) {
   decoder->Reset();
   state = kEndBatch;
   total_result = "";
+  timed_result_json = "";
+  total_samples = 0;
+  endpoint_start_sample = 0;
 }
 
 void accept_waveform(JNIEnv* env, jobject, jshortArray jWaveform) {
   jsize size = env->GetArrayLength(jWaveform);
   int16_t* waveform = env->GetShortArrayElements(jWaveform, 0);
   feature_pipeline->AcceptWaveform(waveform, size);
+  total_samples += size;
   LOG(INFO) << "wenet accept waveform in ms: " << int(size / 16);
 }
 
 void set_input_finished() {
   LOG(INFO) << "wenet input finished";
   feature_pipeline->set_input_finished();
+}
+
+// Escape a string for JSON (handle \, ", control chars)
+std::string JsonEscape(const std::string& s) {
+  std::string out;
+  out.reserve(s.size() + 8);
+  for (char c : s) {
+    switch (c) {
+      case '"': out += "\\\""; break;
+      case '\\': out += "\\\\"; break;
+      case '\n': out += "\\n"; break;
+      case '\r': out += "\\r"; break;
+      case '\t': out += "\\t"; break;
+      default: out += c;
+    }
+  }
+  return out;
+}
+
+void AppendWordPiecesToJson(const std::vector<WordPiece>& pieces) {
+  for (const auto& wp : pieces) {
+    if (!timed_result_json.empty()) {
+      timed_result_json += ",";
+    }
+    char buf[256];
+    snprintf(buf, sizeof(buf), R"({"w":"%s","s":%d,"e":%d})",
+             JsonEscape(wp.word).c_str(), wp.start, wp.end);
+    timed_result_json += buf;
+    LOG(INFO) << "word_piece: " << wp.word
+              << " start=" << wp.start << " end=" << wp.end;
+  }
 }
 
 void decode_thread_func() {
@@ -120,11 +171,22 @@ void decode_thread_func() {
 
     if (state == kEndFeats) {
       LOG(INFO) << "wenet endfeats final result: " << result;
-      total_result += result;
+      std::string tag = " [" + FormatTime(endpoint_start_sample) + "-"
+                        + FormatTime(total_samples) + "]";
+      total_result += result + tag;
+      if (decoder->DecodedSomething()) {
+        AppendWordPiecesToJson(decoder->result()[0].word_pieces);
+      }
       break;
     } else if (state == kEndpoint) {
       LOG(INFO) << "wenet endpoint final result: " << result;
-      total_result += result + "\n";
+      std::string tag = " [" + FormatTime(endpoint_start_sample) + "-"
+                        + FormatTime(total_samples) + "]";
+      total_result += result + tag + "\n";
+      if (decoder->DecodedSomething()) {
+        AppendWordPiecesToJson(decoder->result()[0].word_pieces);
+      }
+      endpoint_start_sample = total_samples;
       decoder->ResetContinuousDecoding();
     } else {
       if (decoder->DecodedSomething()) {
@@ -155,6 +217,11 @@ jstring get_result(JNIEnv* env, jobject) {
   LOG(INFO) << "wenet ui result: " << total_result + result;
   return env->NewStringUTF((total_result + result).c_str());
 }
+
+jstring get_timed_result(JNIEnv* env, jobject) {
+  std::string json = "[" + timed_result_json + "]";
+  return env->NewStringUTF(json.c_str());
+}
 }  // namespace wenet
 
 JNIEXPORT jint JNI_OnLoad(JavaVM* vm, void*) {
@@ -179,6 +246,8 @@ JNIEXPORT jint JNI_OnLoad(JavaVM* vm, void*) {
       {"startDecode", "()V", reinterpret_cast<void*>(wenet::start_decode)},
       {"getResult", "()Ljava/lang/String;",
        reinterpret_cast<void*>(wenet::get_result)},
+      {"getTimedResult", "()Ljava/lang/String;",
+       reinterpret_cast<void*>(wenet::get_timed_result)},
   };
   int rc = env->RegisterNatives(c, methods,
                                 sizeof(methods) / sizeof(JNINativeMethod));

@@ -27,3 +27,16 @@ if(ONNX)
     include_directories(${ONNXRUNTIME_INCLUDE_DIRS})
   endif()
 endif()
+
+if(NNAPI)
+  add_definitions(-DUSE_NNAPI)
+  if(ANDROID)
+    file(GLOB ONNXRUNTIME_INCLUDE_DIRS "${build_DIR}/onnxruntime-android*.aar/headers")
+    file(GLOB ONNXRUNTIME_LINK_DIRS "${build_DIR}/onnxruntime-android*.aar/jni/${ANDROID_ABI}")
+    find_library(ONNXRUNTIME_LIBRARY onnxruntime
+      PATHS ${ONNXRUNTIME_LINK_DIRS}
+      NO_CMAKE_FIND_ROOT_PATH
+    )
+    include_directories(${ONNXRUNTIME_INCLUDE_DIRS})
+  endif()
+endif()

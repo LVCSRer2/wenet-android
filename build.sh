@@ -3,7 +3,7 @@ set -e
 
 # ============================================================
 # WeNet Android 빌드 스크립트
-# 사용법: ./build.sh --backend=libtorch|onnxruntime [--install]
+# 사용법: ./build.sh --backend=libtorch|onnxruntime|onnxruntime-nnapi [--install]
 # ============================================================
 
 ANDROID_SDK="/home/jieunstage/android-sdk"
@@ -40,13 +40,14 @@ for arg in "$@"; do
   esac
 done
 
-if [ "$BACKEND" != "libtorch" ] && [ "$BACKEND" != "onnxruntime" ]; then
-  echo "오류: --backend=libtorch 또는 --backend=onnxruntime 을 지정하세요."
+if [ "$BACKEND" != "libtorch" ] && [ "$BACKEND" != "onnxruntime" ] && [ "$BACKEND" != "onnxruntime-nnapi" ]; then
+  echo "오류: --backend=libtorch|onnxruntime|onnxruntime-nnapi 를 지정하세요."
   echo ""
   echo "사용법:"
-  echo "  $0 --backend=libtorch            # PyTorch Mobile 버전 빌드"
-  echo "  $0 --backend=onnxruntime          # ONNX Runtime 버전 빌드"
-  echo "  $0 --backend=onnxruntime --install # 빌드 후 기기에 설치"
+  echo "  $0 --backend=libtorch              # PyTorch Mobile 버전 빌드"
+  echo "  $0 --backend=onnxruntime            # ONNX Runtime (CPU) 빌드"
+  echo "  $0 --backend=onnxruntime-nnapi      # ONNX Runtime + NNAPI 빌드"
+  echo "  $0 --backend=onnxruntime --install   # 빌드 후 기기에 설치"
   exit 1
 fi
 
@@ -102,6 +103,13 @@ elif [ "$BACKEND" = "onnxruntime" ]; then
   # cppFlags에서 C10 플래그 제거
   sed -i 's|, "-DC10_USE_GLOG", "-DC10_USE_MINIMAL_GLOG"||g' "$GRADLE_FILE"
   echo "  build.gradle → onnxruntime-android:1.13.1"
+
+elif [ "$BACKEND" = "onnxruntime-nnapi" ]; then
+  # 의존성: onnxruntime-android (NNAPI는 동일 라이브러리 사용)
+  sed -i "s|org.pytorch:pytorch_android:[^']*|com.microsoft.onnxruntime:onnxruntime-android:1.13.1|g" "$GRADLE_FILE"
+  # cppFlags에서 C10 플래그 제거
+  sed -i 's|, "-DC10_USE_GLOG", "-DC10_USE_MINIMAL_GLOG"||g' "$GRADLE_FILE"
+  echo "  build.gradle → onnxruntime-android:1.13.1 (NNAPI)"
 fi
 
 # --- 3b: CMakeLists.txt 옵션 전환 ---
@@ -110,12 +118,20 @@ CMAKE_FILE="$CPP_DIR/CMakeLists.txt"
 if [ "$BACKEND" = "libtorch" ]; then
   sed -i 's|option(TORCH "whether to build with Torch" OFF)|option(TORCH "whether to build with Torch" ON)|' "$CMAKE_FILE"
   sed -i 's|option(ONNX "whether to build with ONNX" ON)|option(ONNX "whether to build with ONNX" OFF)|' "$CMAKE_FILE"
-  echo "  CMakeLists.txt → TORCH=ON, ONNX=OFF"
+  sed -i 's|option(NNAPI "whether to build with NNAPI" ON)|option(NNAPI "whether to build with NNAPI" OFF)|' "$CMAKE_FILE"
+  echo "  CMakeLists.txt → TORCH=ON, ONNX=OFF, NNAPI=OFF"
 
 elif [ "$BACKEND" = "onnxruntime" ]; then
   sed -i 's|option(TORCH "whether to build with Torch" ON)|option(TORCH "whether to build with Torch" OFF)|' "$CMAKE_FILE"
   sed -i 's|option(ONNX "whether to build with ONNX" OFF)|option(ONNX "whether to build with ONNX" ON)|' "$CMAKE_FILE"
-  echo "  CMakeLists.txt → TORCH=OFF, ONNX=ON"
+  sed -i 's|option(NNAPI "whether to build with NNAPI" ON)|option(NNAPI "whether to build with NNAPI" OFF)|' "$CMAKE_FILE"
+  echo "  CMakeLists.txt → TORCH=OFF, ONNX=ON, NNAPI=OFF"
+
+elif [ "$BACKEND" = "onnxruntime-nnapi" ]; then
+  sed -i 's|option(TORCH "whether to build with Torch" ON)|option(TORCH "whether to build with Torch" OFF)|' "$CMAKE_FILE"
+  sed -i 's|option(ONNX "whether to build with ONNX" ON)|option(ONNX "whether to build with ONNX" OFF)|' "$CMAKE_FILE"
+  sed -i 's|option(NNAPI "whether to build with NNAPI" OFF)|option(NNAPI "whether to build with NNAPI" ON)|' "$CMAKE_FILE"
+  echo "  CMakeLists.txt → TORCH=OFF, ONNX=OFF, NNAPI=ON"
 fi
 
 # --- 3c: MainActivity.java 리소스 목록 전환 ---
@@ -128,6 +144,10 @@ if [ "$BACKEND" = "libtorch" ]; then
 elif [ "$BACKEND" = "onnxruntime" ]; then
   sed -i 's|"final.zip", "units.txt"|"encoder.onnx", "ctc.onnx", "decoder.onnx", "units.txt"|' "$JAVA_FILE"
   echo "  MainActivity.java → encoder.onnx, ctc.onnx, decoder.onnx, units.txt"
+
+elif [ "$BACKEND" = "onnxruntime-nnapi" ]; then
+  sed -i 's|"final.zip", "units.txt"|"encoder.onnx", "ctc.onnx", "decoder.onnx", "units.txt"|' "$JAVA_FILE"
+  echo "  MainActivity.java → encoder.onnx, ctc.onnx, decoder.onnx, units.txt (NNAPI)"
 fi
 
 # ----------------------------------------------------------
@@ -152,7 +172,7 @@ if [ "$BACKEND" = "libtorch" ]; then
   cp "$LIBTORCH_MODEL_DIR/units.txt" "$ASSETS_DIR/"
   echo "  assets ← final.zip ($(du -h "$ASSETS_DIR/final.zip" | cut -f1))"
 
-elif [ "$BACKEND" = "onnxruntime" ]; then
+elif [ "$BACKEND" = "onnxruntime" ] || [ "$BACKEND" = "onnxruntime-nnapi" ]; then
   if [ ! -f "$ONNX_MODEL_DIR/encoder.onnx" ]; then
     echo "오류: $ONNX_MODEL_DIR/encoder.onnx 없음"
     echo "먼저 ONNX 모델을 export 하세요."

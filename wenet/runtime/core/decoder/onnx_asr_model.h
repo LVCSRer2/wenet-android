@@ -32,7 +32,7 @@ namespace wenet {
 
 class OnnxAsrModel : public AsrModel {
  public:
-  static void InitEngineThreads(int num_threads = 1);
+  static void InitEngineThreads(int num_threads = 1, bool use_nnapi = false);
 
  public:
   OnnxAsrModel() = default;
@@ -65,6 +65,7 @@ class OnnxAsrModel : public AsrModel {
   //  One Env must be created before using any other Onnxruntime functionality.
   static Ort::Env env_;  // shared environment across threads.
   static Ort::SessionOptions session_options_;
+  static bool use_nnapi_;
   std::shared_ptr<Ort::Session> encoder_session_ = nullptr;
   std::shared_ptr<Ort::Session> rescore_session_ = nullptr;
   std::shared_ptr<Ort::Session> ctc_session_ = nullptr;

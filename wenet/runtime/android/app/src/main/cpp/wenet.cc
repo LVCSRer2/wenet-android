@@ -15,7 +15,7 @@
 #include <thread>
 
 #include "decoder/asr_decoder.h"
-#ifdef USE_ONNX
+#if defined(USE_ONNX) || defined(USE_NNAPI)
 #include "decoder/onnx_asr_model.h"
 #endif
 #ifdef USE_TORCH
@@ -44,10 +44,18 @@ void init(JNIEnv* env, jobject, jstring jModelDir) {
 #ifdef USE_ONNX
   std::string modelDir = std::string(pModelDir);
   std::string dictPath = modelDir + "/units.txt";
-  OnnxAsrModel::InitEngineThreads(1);
+  OnnxAsrModel::InitEngineThreads(1, false);
   auto model = std::make_shared<OnnxAsrModel>();
   model->Read(modelDir);
   LOG(INFO) << "model dir: " << modelDir;
+#endif
+#ifdef USE_NNAPI
+  std::string modelDir = std::string(pModelDir);
+  std::string dictPath = modelDir + "/units.txt";
+  OnnxAsrModel::InitEngineThreads(1, true);
+  auto model = std::make_shared<OnnxAsrModel>();
+  model->Read(modelDir);
+  LOG(INFO) << "model dir (NNAPI): " << modelDir;
 #endif
 #ifdef USE_TORCH
   std::string modelPath = std::string(pModelDir) + "/final.zip";

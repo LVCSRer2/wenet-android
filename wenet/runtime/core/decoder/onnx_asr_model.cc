@@ -21,15 +21,26 @@
 #include <memory>
 #include <utility>
 
+#ifdef __ANDROID__
+#include "nnapi_provider_factory.h"
+#endif
+
 #include "utils/string.h"
 
 namespace wenet {
 
 Ort::Env OnnxAsrModel::env_ = Ort::Env(ORT_LOGGING_LEVEL_WARNING, "");
 Ort::SessionOptions OnnxAsrModel::session_options_ = Ort::SessionOptions();
+bool OnnxAsrModel::use_nnapi_ = false;
 
-void OnnxAsrModel::InitEngineThreads(int num_threads) {
+void OnnxAsrModel::InitEngineThreads(int num_threads, bool use_nnapi) {
   session_options_.SetIntraOpNumThreads(num_threads);
+#ifdef __ANDROID__
+  if (use_nnapi) {
+    use_nnapi_ = true;
+    OrtSessionOptionsAppendExecutionProvider_Nnapi(session_options_, 0);
+  }
+#endif
 }
 
 void OnnxAsrModel::GetInputOutputInfo(
@@ -100,7 +111,29 @@ void OnnxAsrModel::Read(const std::string& model_dir) {
 #endif
   } catch (std::exception const& e) {
     LOG(ERROR) << "error when load onnx model: " << e.what();
-    exit(0);
+#ifdef __ANDROID__
+    if (use_nnapi_) {
+      LOG(WARNING) << "NNAPI failed, falling back to CPU";
+      use_nnapi_ = false;
+      session_options_ = Ort::SessionOptions();
+      session_options_.SetIntraOpNumThreads(1);
+      try {
+        encoder_session_ = std::make_shared<Ort::Session>(
+            env_, encoder_onnx_path.c_str(), session_options_);
+        rescore_session_ = std::make_shared<Ort::Session>(
+            env_, rescore_onnx_path.c_str(), session_options_);
+        ctc_session_ = std::make_shared<Ort::Session>(
+            env_, ctc_onnx_path.c_str(), session_options_);
+        LOG(INFO) << "CPU fallback successful";
+      } catch (std::exception const& e2) {
+        LOG(ERROR) << "CPU fallback also failed: " << e2.what();
+        exit(0);
+      }
+    } else
+#endif
+    {
+      exit(0);
+    }
   }
 
   // 2. Read metadata

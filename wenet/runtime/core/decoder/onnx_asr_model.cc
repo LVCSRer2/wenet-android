@@ -18,6 +18,7 @@
 #include "decoder/onnx_asr_model.h"
 
 #include <algorithm>
+#include <fstream>
 #include <memory>
 #include <utility>
 
@@ -91,21 +92,26 @@ void OnnxAsrModel::Read(const std::string& model_dir) {
   std::string encoder_onnx_path = model_dir + "/encoder.onnx";
   std::string rescore_onnx_path = model_dir + "/decoder.onnx";
   std::string ctc_onnx_path = model_dir + "/ctc.onnx";
+  bool has_rescore = std::ifstream(rescore_onnx_path).good();
 
   // 1. Load sessions
   try {
 #ifdef _MSC_VER
     encoder_session_ = std::make_shared<Ort::Session>(
         env_, ToWString(encoder_onnx_path).c_str(), session_options_);
-    rescore_session_ = std::make_shared<Ort::Session>(
-        env_, ToWString(rescore_onnx_path).c_str(), session_options_);
+    if (has_rescore) {
+      rescore_session_ = std::make_shared<Ort::Session>(
+          env_, ToWString(rescore_onnx_path).c_str(), session_options_);
+    }
     ctc_session_ = std::make_shared<Ort::Session>(
         env_, ToWString(ctc_onnx_path).c_str(), session_options_);
 #else
     encoder_session_ = std::make_shared<Ort::Session>(
         env_, encoder_onnx_path.c_str(), session_options_);
-    rescore_session_ = std::make_shared<Ort::Session>(
-        env_, rescore_onnx_path.c_str(), session_options_);
+    if (has_rescore) {
+      rescore_session_ = std::make_shared<Ort::Session>(
+          env_, rescore_onnx_path.c_str(), session_options_);
+    }
     ctc_session_ = std::make_shared<Ort::Session>(env_, ctc_onnx_path.c_str(),
                                                   session_options_);
 #endif
@@ -120,8 +126,10 @@ void OnnxAsrModel::Read(const std::string& model_dir) {
       try {
         encoder_session_ = std::make_shared<Ort::Session>(
             env_, encoder_onnx_path.c_str(), session_options_);
-        rescore_session_ = std::make_shared<Ort::Session>(
-            env_, rescore_onnx_path.c_str(), session_options_);
+        if (has_rescore) {
+          rescore_session_ = std::make_shared<Ort::Session>(
+              env_, rescore_onnx_path.c_str(), session_options_);
+        }
         ctc_session_ = std::make_shared<Ort::Session>(
             env_, ctc_onnx_path.c_str(), session_options_);
         LOG(INFO) << "CPU fallback successful";
@@ -196,8 +204,12 @@ void OnnxAsrModel::Read(const std::string& model_dir) {
   GetInputOutputInfo(encoder_session_, &encoder_in_names_, &encoder_out_names_);
   LOG(INFO) << "Onnx CTC:";
   GetInputOutputInfo(ctc_session_, &ctc_in_names_, &ctc_out_names_);
-  LOG(INFO) << "Onnx Rescore:";
-  GetInputOutputInfo(rescore_session_, &rescore_in_names_, &rescore_out_names_);
+  if (rescore_session_) {
+    LOG(INFO) << "Onnx Rescore:";
+    GetInputOutputInfo(rescore_session_, &rescore_in_names_, &rescore_out_names_);
+  } else {
+    LOG(INFO) << "Onnx Rescore: skipped (decoder.onnx not found)";
+  }
 }
 
 OnnxAsrModel::OnnxAsrModel(const OnnxAsrModel& other) {
@@ -405,6 +417,10 @@ void OnnxAsrModel::AttentionRescoring(const std::vector<std::vector<int>>& hyps,
   rescoring_score->resize(num_hyps, 0.0f);
 
   if (num_hyps == 0) {
+    return;
+  }
+  // No rescore model loaded
+  if (!rescore_session_) {
     return;
   }
   // No encoder output

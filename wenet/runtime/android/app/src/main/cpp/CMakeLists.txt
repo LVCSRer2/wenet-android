@@ -6,7 +6,7 @@ include(ExternalProject)
 
 option(TORCH "whether to build with Torch" OFF)
 option(ONNX "whether to build with ONNX" OFF)
-option(NNAPI "whether to build with NNAPI" ON)
+option(NNAPI "whether to build with NNAPI" OFF)
 option(ITN "whether to use WeTextProcessing" ON)
 set(CMAKE_VERBOSE_MAKEFILE on)
 set(build_DIR ${CMAKE_SOURCE_DIR}/../../../build)

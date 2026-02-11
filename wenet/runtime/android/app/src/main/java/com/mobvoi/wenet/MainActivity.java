@@ -33,9 +33,14 @@ public class MainActivity extends AppCompatActivity {
   private static final String LOG_TAG = "WENET";
   private static final int SAMPLE_RATE = 16000;  // The sampling rate
   private static final int MAX_QUEUE_SIZE = 2500;  // 100 seconds audio, 1 / 0.04 * 100
-  private static final List<String> resource = Arrays.asList(
-    "encoder.onnx", "ctc.onnx", "decoder.onnx", "units.txt"
-  );
+  private static final List<String> resource;
+  static {
+    if ("libtorch".equals(BuildConfig.BACKEND)) {
+      resource = Arrays.asList("final.zip", "units.txt");
+    } else {
+      resource = Arrays.asList("encoder.onnx", "ctc.onnx", "decoder.onnx", "units.txt");
+    }
+  }
 
   private boolean startRecord = false;
   private AudioRecord record = null;

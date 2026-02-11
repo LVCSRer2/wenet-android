@@ -11,7 +11,6 @@ JAVA_HOME="$ANDROID_SDK/jdk-17.0.2"
 WORK_DIR="$(cd "$(dirname "$0")" && pwd)"
 ANDROID_DIR="$WORK_DIR/wenet/runtime/android"
 ASSETS_DIR="$ANDROID_DIR/app/src/main/assets"
-CPP_DIR="$ANDROID_DIR/app/src/main/cpp"
 
 export JAVA_HOME
 export ANDROID_HOME="$ANDROID_SDK"
@@ -80,75 +79,17 @@ else
 fi
 
 # ----------------------------------------------------------
-# 3단계: 백엔드별 설정 전환
+# 3단계: 백엔드→flavor 매핑
 # ----------------------------------------------------------
 echo ""
-echo "=== 3단계: $BACKEND 설정 적용 ==="
+echo "=== 3단계: flavor 매핑 ==="
 
-# --- 3a: build.gradle 수정 ---
-GRADLE_FILE="$ANDROID_DIR/app/build.gradle"
-
-if [ "$BACKEND" = "libtorch" ]; then
-  # 의존성: pytorch_android + C10 cppFlags
-  sed -i "s|com.microsoft.onnxruntime:onnxruntime-android:[^']*|org.pytorch:pytorch_android:1.13.0|g" "$GRADLE_FILE"
-  # cppFlags에 C10 플래그 추가 (없으면)
-  if ! grep -q "DC10_USE_GLOG" "$GRADLE_FILE"; then
-    sed -i 's|cppFlags "-std=c++14", "-DANDROID", "-Wno-c++11-narrowing", "-fexceptions"|cppFlags "-std=c++14", "-DANDROID", "-Wno-c++11-narrowing", "-fexceptions", "-DC10_USE_GLOG", "-DC10_USE_MINIMAL_GLOG"|' "$GRADLE_FILE"
-  fi
-  echo "  build.gradle → pytorch_android:1.13.0"
-
-elif [ "$BACKEND" = "onnxruntime" ]; then
-  # 의존성: onnxruntime-android
-  sed -i "s|org.pytorch:pytorch_android:[^']*|com.microsoft.onnxruntime:onnxruntime-android:1.13.1|g" "$GRADLE_FILE"
-  # cppFlags에서 C10 플래그 제거
-  sed -i 's|, "-DC10_USE_GLOG", "-DC10_USE_MINIMAL_GLOG"||g' "$GRADLE_FILE"
-  echo "  build.gradle → onnxruntime-android:1.13.1"
-
-elif [ "$BACKEND" = "onnxruntime-nnapi" ]; then
-  # 의존성: onnxruntime-android (NNAPI는 동일 라이브러리 사용)
-  sed -i "s|org.pytorch:pytorch_android:[^']*|com.microsoft.onnxruntime:onnxruntime-android:1.13.1|g" "$GRADLE_FILE"
-  # cppFlags에서 C10 플래그 제거
-  sed -i 's|, "-DC10_USE_GLOG", "-DC10_USE_MINIMAL_GLOG"||g' "$GRADLE_FILE"
-  echo "  build.gradle → onnxruntime-android:1.13.1 (NNAPI)"
-fi
-
-# --- 3b: CMakeLists.txt 옵션 전환 ---
-CMAKE_FILE="$CPP_DIR/CMakeLists.txt"
-
-if [ "$BACKEND" = "libtorch" ]; then
-  sed -i 's|option(TORCH "whether to build with Torch" OFF)|option(TORCH "whether to build with Torch" ON)|' "$CMAKE_FILE"
-  sed -i 's|option(ONNX "whether to build with ONNX" ON)|option(ONNX "whether to build with ONNX" OFF)|' "$CMAKE_FILE"
-  sed -i 's|option(NNAPI "whether to build with NNAPI" ON)|option(NNAPI "whether to build with NNAPI" OFF)|' "$CMAKE_FILE"
-  echo "  CMakeLists.txt → TORCH=ON, ONNX=OFF, NNAPI=OFF"
-
-elif [ "$BACKEND" = "onnxruntime" ]; then
-  sed -i 's|option(TORCH "whether to build with Torch" ON)|option(TORCH "whether to build with Torch" OFF)|' "$CMAKE_FILE"
-  sed -i 's|option(ONNX "whether to build with ONNX" OFF)|option(ONNX "whether to build with ONNX" ON)|' "$CMAKE_FILE"
-  sed -i 's|option(NNAPI "whether to build with NNAPI" ON)|option(NNAPI "whether to build with NNAPI" OFF)|' "$CMAKE_FILE"
-  echo "  CMakeLists.txt → TORCH=OFF, ONNX=ON, NNAPI=OFF"
-
-elif [ "$BACKEND" = "onnxruntime-nnapi" ]; then
-  sed -i 's|option(TORCH "whether to build with Torch" ON)|option(TORCH "whether to build with Torch" OFF)|' "$CMAKE_FILE"
-  sed -i 's|option(ONNX "whether to build with ONNX" ON)|option(ONNX "whether to build with ONNX" OFF)|' "$CMAKE_FILE"
-  sed -i 's|option(NNAPI "whether to build with NNAPI" OFF)|option(NNAPI "whether to build with NNAPI" ON)|' "$CMAKE_FILE"
-  echo "  CMakeLists.txt → TORCH=OFF, ONNX=OFF, NNAPI=ON"
-fi
-
-# --- 3c: MainActivity.java 리소스 목록 전환 ---
-JAVA_FILE="$ANDROID_DIR/app/src/main/java/com/mobvoi/wenet/MainActivity.java"
-
-if [ "$BACKEND" = "libtorch" ]; then
-  sed -i 's|"encoder.onnx", "ctc.onnx", "decoder.onnx", "units.txt"|"final.zip", "units.txt"|' "$JAVA_FILE"
-  echo "  MainActivity.java → final.zip, units.txt"
-
-elif [ "$BACKEND" = "onnxruntime" ]; then
-  sed -i 's|"final.zip", "units.txt"|"encoder.onnx", "ctc.onnx", "decoder.onnx", "units.txt"|' "$JAVA_FILE"
-  echo "  MainActivity.java → encoder.onnx, ctc.onnx, decoder.onnx, units.txt"
-
-elif [ "$BACKEND" = "onnxruntime-nnapi" ]; then
-  sed -i 's|"final.zip", "units.txt"|"encoder.onnx", "ctc.onnx", "decoder.onnx", "units.txt"|' "$JAVA_FILE"
-  echo "  MainActivity.java → encoder.onnx, ctc.onnx, decoder.onnx, units.txt (NNAPI)"
-fi
+case "$BACKEND" in
+  libtorch)        FLAVOR="Libtorch" ;;
+  onnxruntime)     FLAVOR="Onnxruntime" ;;
+  onnxruntime-nnapi) FLAVOR="OnnxruntimeNnapi" ;;
+esac
+echo "  $BACKEND → ${FLAVOR}Debug"
 
 # ----------------------------------------------------------
 # 4단계: 모델 파일 복사
@@ -188,19 +129,17 @@ fi
 echo "  assets ← units.txt"
 
 # ----------------------------------------------------------
-# 5단계: 클린 빌드
+# 5단계: Gradle 빌드 (flavor별 독립 빌드)
 # ----------------------------------------------------------
 echo ""
 echo "=== 5단계: Gradle 빌드 ==="
 cd "$ANDROID_DIR"
 echo "sdk.dir=$ANDROID_SDK" > local.properties
 
-# CMake 캐시 삭제 (백엔드 전환 시 필수)
-rm -rf app/.cxx app/build
+./gradlew assemble${FLAVOR}Debug
 
-./gradlew assembleDebug
-
-APK="$ANDROID_DIR/app/build/outputs/apk/debug/app-debug.apk"
+FLAVOR_LOWER=$(echo "$FLAVOR" | sed 's/./\L&/')
+APK="$ANDROID_DIR/app/build/outputs/apk/${FLAVOR_LOWER}/debug/app-${FLAVOR_LOWER}-debug.apk"
 echo ""
 echo "=== 빌드 완료 ==="
 echo "  APK: $APK"

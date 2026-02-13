@@ -135,7 +135,16 @@ echo "=== 5단계: Gradle 빌드 ==="
 cd "$ANDROID_DIR"
 echo "sdk.dir=$ANDROID_SDK" > local.properties
 
-./gradlew assemble${FLAVOR}Debug
+ABI_OPT=""
+if [ "$INSTALL" = true ]; then
+  DEVICE_ABI=$(adb shell getprop ro.product.cpu.abi 2>/dev/null | tr -d '\r')
+  if [ -n "$DEVICE_ABI" ]; then
+    echo "  기기 ABI 감지: $DEVICE_ABI (단일 아키텍처 빌드)"
+    ABI_OPT="-Pabi_filters=$DEVICE_ABI"
+  fi
+fi
+
+./gradlew assemble${FLAVOR}Debug $ABI_OPT
 
 FLAVOR_LOWER=$(echo "$FLAVOR" | sed 's/./\L&/')
 APK="$ANDROID_DIR/app/build/outputs/apk/${FLAVOR_LOWER}/debug/app-${FLAVOR_LOWER}-debug.apk"

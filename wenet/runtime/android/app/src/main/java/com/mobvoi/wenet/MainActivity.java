@@ -235,6 +235,11 @@ public class MainActivity extends AppCompatActivity {
     // Recordings button
     Button recordingsButton = findViewById(R.id.recordingsButton);
     recordingsButton.setOnClickListener(v -> showRecordingsDialog());
+
+    // Settings button
+    Button settingsButton = findViewById(R.id.settingsButton);
+    settingsButton.setOnClickListener(v ->
+        startActivity(new Intent(this, SettingsActivity.class)));
   }
 
   @Override
@@ -360,6 +365,10 @@ public class MainActivity extends AppCompatActivity {
         } else {
           // Save result.json with timed result
           saveTimedResult();
+          // Send result to Slack
+          String total_result = Recognize.getResult();
+          SlackWebhookSender.send(
+              getApplicationContext(), currentRecordingName, total_result);
           stopService(new Intent(MainActivity.this, RecordingForegroundService.class));
           final String recordingName = currentRecordingName;
           runOnUiThread(() -> {

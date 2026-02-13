@@ -130,6 +130,22 @@ JAVA_HOME="$ANDROID_SDK/jdk-17.0.2"
 | **Native Heap** | 346 MB | 650 MB | **319 MB** |
 | **인식 품질** | 정상 | 정상 | 정상 |
 
+## Slack Webhook 연동
+
+녹음 완료 후 음성인식 결과를 Slack 채널로 자동 전송하는 기능입니다.
+
+### 설정 방법
+1. 앱 하단의 **Settings** 버튼 탭
+2. Slack Incoming Webhook URL 입력 후 **Save**
+3. 녹음 → Stop → Slack 채널에 `📝 [녹음명] + 인식결과` 메시지 수신
+
+### 관련 파일
+| 파일 | 역할 |
+|------|------|
+| `SlackWebhookSender.java` | HttpsURLConnection으로 Slack webhook POST (백그라운드 스레드) |
+| `SettingsActivity.java` | Webhook URL 입력/저장 화면 (SharedPreferences) |
+| `activity_settings.xml` | 설정 화면 레이아웃 |
+
 ## 주요 수정 사항 (원본 WeNet 대비)
 
 1. **`wenet.cc`**: `#ifdef USE_ONNX` / `#ifdef USE_TORCH` 듀얼 백엔드 지원

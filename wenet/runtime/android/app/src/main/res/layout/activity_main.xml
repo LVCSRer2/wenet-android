@@ -90,23 +90,35 @@
       android:layout_height="wrap_content"
       android:text="Button"
       app:layout_constraintBottom_toBottomOf="parent"
+      app:layout_constraintStart_toStartOf="parent"
       app:layout_constraintEnd_toStartOf="@+id/recordingsButton"
-      app:layout_constraintStart_toStartOf="parent" />
+      app:layout_constraintHorizontal_chainStyle="spread" />
 
     <Button
       android:id="@+id/recordingsButton"
-      android:layout_width="wrap_content"
+      android:layout_width="0dp"
       android:layout_height="wrap_content"
       android:text="Recordings"
       app:layout_constraintBottom_toBottomOf="parent"
+      app:layout_constraintStart_toEndOf="@+id/button"
       app:layout_constraintEnd_toStartOf="@+id/copyButton" />
 
     <Button
       android:id="@+id/copyButton"
-      android:layout_width="wrap_content"
+      android:layout_width="0dp"
       android:layout_height="wrap_content"
       android:text="Copy"
       app:layout_constraintBottom_toBottomOf="parent"
+      app:layout_constraintStart_toEndOf="@+id/recordingsButton"
+      app:layout_constraintEnd_toStartOf="@+id/settingsButton" />
+
+    <Button
+      android:id="@+id/settingsButton"
+      android:layout_width="0dp"
+      android:layout_height="wrap_content"
+      android:text="Settings"
+      app:layout_constraintBottom_toBottomOf="parent"
+      app:layout_constraintStart_toEndOf="@+id/copyButton"
       app:layout_constraintEnd_toEndOf="parent" />
 
 </androidx.constraintlayout.widget.ConstraintLayout>

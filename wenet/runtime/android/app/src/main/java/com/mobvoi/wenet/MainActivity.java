@@ -1,18 +1,22 @@
 package com.mobvoi.wenet;
 
 import android.Manifest;
+import android.content.BroadcastReceiver;
 import android.content.ClipData;
 import android.content.ClipboardManager;
 import android.content.Context;
 import android.content.Intent;
+import android.content.IntentFilter;
 import android.content.pm.PackageManager;
 import android.content.res.AssetManager;
 import android.graphics.Color;
 import android.media.AudioAttributes;
 import android.media.AudioFormat;
+import android.media.AudioManager;
 import android.media.AudioRecord;
 import android.media.AudioTrack;
 import android.media.MediaRecorder;
+import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
@@ -73,7 +77,23 @@ public class MainActivity extends AppCompatActivity {
   private int miniBufferSize = 0;
   private final BlockingQueue<short[]> bufferQueue = new ArrayBlockingQueue<>(MAX_QUEUE_SIZE);
 
+  // Bluetooth SCO
+  private AudioManager audioManager;
+  private boolean bluetoothScoOn = false;
+  private final BroadcastReceiver scoReceiver = new BroadcastReceiver() {
+    @Override
+    public void onReceive(Context context, Intent intent) {
+      int state = intent.getIntExtra(AudioManager.EXTRA_SCO_AUDIO_STATE, -1);
+      if (state == AudioManager.SCO_AUDIO_STATE_CONNECTED) {
+        Log.i(LOG_TAG, "Bluetooth SCO connected - using BT mic");
+      } else if (state == AudioManager.SCO_AUDIO_STATE_DISCONNECTED) {
+        Log.i(LOG_TAG, "Bluetooth SCO disconnected - using phone mic");
+      }
+    }
+  };
+
   // Recording save
+  private String timestampedResult = null;
   private String currentRecordingName = null;
   private FileOutputStream pcmOutputStream = null;
 
@@ -154,6 +174,9 @@ public class MainActivity extends AppCompatActivity {
   protected void onCreate(Bundle savedInstanceState) {
     super.onCreate(savedInstanceState);
     setContentView(R.layout.activity_main);
+    audioManager = (AudioManager) getSystemService(Context.AUDIO_SERVICE);
+    registerReceiver(scoReceiver,
+        new IntentFilter(AudioManager.ACTION_SCO_AUDIO_STATE_UPDATED));
     requestAudioPermissions();
     try {
       assetsInit(this);
@@ -168,8 +191,9 @@ public class MainActivity extends AppCompatActivity {
 
     Button copyButton = findViewById(R.id.copyButton);
     copyButton.setOnClickListener(view -> {
-      TextView tv = findViewById(R.id.textView);
-      String text = tv.getText().toString();
+      String text = (timestampedResult != null && !timestampedResult.isEmpty())
+          ? timestampedResult
+          : ((TextView) findViewById(R.id.textView)).getText().toString();
       if (!text.isEmpty()) {
         ClipboardManager clipboard = (ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE);
         clipboard.setPrimaryClip(ClipData.newPlainText("wenet_result", text));
@@ -182,6 +206,7 @@ public class MainActivity extends AppCompatActivity {
     button.setOnClickListener(view -> {
       if (!startRecord) {
         stopPlayback();
+        startBluetoothMic();
         startRecord = true;
         currentRecordingName = RecordingManager.createRecordingDir(this);
         try {
@@ -246,6 +271,8 @@ public class MainActivity extends AppCompatActivity {
   protected void onDestroy() {
     super.onDestroy();
     stopPlayback();
+    stopBluetoothMic();
+    try { unregisterReceiver(scoReceiver); } catch (Exception ignored) {}
   }
 
   private void requestAudioPermissions() {
@@ -256,6 +283,36 @@ public class MainActivity extends AppCompatActivity {
           MY_PERMISSIONS_RECORD_AUDIO);
     } else {
       initRecorder();
+    }
+  }
+
+  private void startBluetoothMic() {
+    try {
+      // Android 12 (API 31)+ requires BLUETOOTH_CONNECT runtime permission
+      if (Build.VERSION.SDK_INT >= 31
+          && ContextCompat.checkSelfPermission(this, "android.permission.BLUETOOTH_CONNECT")
+              != PackageManager.PERMISSION_GRANTED) {
+        Log.i(LOG_TAG, "BLUETOOTH_CONNECT permission not granted, using phone mic");
+        return;
+      }
+      audioManager.startBluetoothSco();
+      audioManager.setBluetoothScoOn(true);
+      bluetoothScoOn = true;
+      Log.i(LOG_TAG, "Bluetooth SCO requested");
+    } catch (Exception e) {
+      Log.i(LOG_TAG, "Bluetooth SCO not available: " + e.getMessage());
+      bluetoothScoOn = false;
+    }
+  }
+
+  private void stopBluetoothMic() {
+    if (bluetoothScoOn) {
+      try {
+        audioManager.setBluetoothScoOn(false);
+        audioManager.stopBluetoothSco();
+      } catch (Exception ignored) {}
+      bluetoothScoOn = false;
+      Log.i(LOG_TAG, "Bluetooth SCO stopped");
     }
   }
 
@@ -311,6 +368,7 @@ public class MainActivity extends AppCompatActivity {
         }
       }
       record.stop();
+      stopBluetoothMic();
       voiceView.zero();
       // Close PCM file
       if (pcmOutputStream != null) {
@@ -365,10 +423,14 @@ public class MainActivity extends AppCompatActivity {
         } else {
           // Save result.json with timed result
           saveTimedResult();
-          // Send result to Slack
-          String total_result = Recognize.getResult();
+          // Build timestamped text for copy & Slack
+          try {
+            timestampedResult = buildTimestampedText(Recognize.getTimedResult());
+          } catch (Exception e) {
+            timestampedResult = Recognize.getResult();
+          }
           SlackWebhookSender.send(
-              getApplicationContext(), currentRecordingName, total_result);
+              getApplicationContext(), currentRecordingName, timestampedResult);
           stopService(new Intent(MainActivity.this, RecordingForegroundService.class));
           final String recordingName = currentRecordingName;
           runOnUiThread(() -> {
@@ -400,6 +462,67 @@ public class MainActivity extends AppCompatActivity {
     }
   }
 
+  private String buildTimestampedText(String timedJson) {
+    try {
+      JSONArray arr = new JSONArray(timedJson);
+      if (arr.length() == 0) return "";
+      StringBuilder result = new StringBuilder();
+      StringBuilder sentence = new StringBuilder();
+      int sentenceStartMs = -1;
+      for (int i = 0; i < arr.length(); i++) {
+        JSONObject obj = arr.getJSONObject(i);
+        String w = obj.getString("w");
+        int startMs = obj.getInt("s");
+        if (sentenceStartMs == -1) sentenceStartMs = startMs;
+        if ("\u2581".equals(w)) {
+          sentence.append(" ");
+        } else {
+          sentence.append(w);
+        }
+        if (".".equals(w) || "?".equals(w) || "!".equals(w)) {
+          result.append("[").append(formatTimeMs(sentenceStartMs)).append("] ")
+              .append(sentence.toString().trim()).append("\n");
+          sentence = new StringBuilder();
+          sentenceStartMs = -1;
+        }
+      }
+      if (sentence.toString().trim().length() > 0) {
+        result.append("[").append(formatTimeMs(sentenceStartMs)).append("] ")
+            .append(sentence.toString().trim()).append("\n");
+      }
+      return result.toString().trim();
+    } catch (Exception e) {
+      Log.e(LOG_TAG, "Error building timestamped text: " + e.getMessage());
+      return "";
+    }
+  }
+
+  private String buildTimestampedTextFromSpans(List<WordSpan> spans) {
+    if (spans == null || spans.isEmpty()) return "";
+    StringBuilder result = new StringBuilder();
+    StringBuilder sentence = new StringBuilder();
+    int sentenceStartMs = -1;
+    for (WordSpan ws : spans) {
+      if (sentenceStartMs == -1) sentenceStartMs = ws.startMs;
+      if ("\u2581".equals(ws.word)) {
+        sentence.append(" ");
+      } else {
+        sentence.append(ws.word);
+      }
+      if (".".equals(ws.word) || "?".equals(ws.word) || "!".equals(ws.word)) {
+        result.append("[").append(formatTimeMs(sentenceStartMs)).append("] ")
+            .append(sentence.toString().trim()).append("\n");
+        sentence = new StringBuilder();
+        sentenceStartMs = -1;
+      }
+    }
+    if (sentence.toString().trim().length() > 0) {
+      result.append("[").append(formatTimeMs(sentenceStartMs)).append("] ")
+          .append(sentence.toString().trim()).append("\n");
+    }
+    return result.toString().trim();
+  }
+
   // --- Playback ---
 
   private void enterPlaybackMode(String recordingName) {
@@ -425,6 +548,9 @@ public class MainActivity extends AppCompatActivity {
 
     // Load word spans
     wordSpans = loadWordSpans(recordingName);
+
+    // Build timestamped text from word spans
+    timestampedResult = buildTimestampedTextFromSpans(wordSpans);
 
     // Show playback controls
     LinearLayout playbackLayout = findViewById(R.id.playbackLayout);

@@ -28,7 +28,7 @@
         android:layout_height="wrap_content"
         android:padding="8dp"
         android:text=""
-        android:textSize="22sp"
+        android:textSize="20sp"
         android:linksClickable="true" />
 
     </ScrollView>
@@ -36,7 +36,8 @@
     <com.mobvoi.wenet.VoiceRectView
       android:id="@+id/voiceRectView"
       android:layout_width="0dp"
-      android:layout_height="150dp"
+      android:layout_height="0dp"
+      app:layout_constraintHeight_percent="0.15"
       VoiceRect:RectCount="50"
       VoiceRect:RectDownColor="@color/green"
       VoiceRect:RectOffset="0"
@@ -64,6 +65,7 @@
         android:id="@+id/playPauseButton"
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
+        android:textSize="12sp"
         android:text="Play"
         android:minWidth="80dp" />
 
@@ -88,6 +90,7 @@
       android:id="@+id/button"
       android:layout_width="0dp"
       android:layout_height="wrap_content"
+      android:textSize="12sp"
       android:text="Button"
       app:layout_constraintBottom_toBottomOf="parent"
       app:layout_constraintStart_toStartOf="parent"
@@ -98,6 +101,7 @@
       android:id="@+id/recordingsButton"
       android:layout_width="0dp"
       android:layout_height="wrap_content"
+      android:textSize="12sp"
       android:text="Recordings"
       app:layout_constraintBottom_toBottomOf="parent"
       app:layout_constraintStart_toEndOf="@+id/button"
@@ -107,6 +111,7 @@
       android:id="@+id/copyButton"
       android:layout_width="0dp"
       android:layout_height="wrap_content"
+      android:textSize="12sp"
       android:text="Copy"
       app:layout_constraintBottom_toBottomOf="parent"
       app:layout_constraintStart_toEndOf="@+id/recordingsButton"
@@ -116,6 +121,7 @@
       android:id="@+id/settingsButton"
       android:layout_width="0dp"
       android:layout_height="wrap_content"
+      android:textSize="12sp"
       android:text="Settings"
       app:layout_constraintBottom_toBottomOf="parent"
       app:layout_constraintStart_toEndOf="@+id/copyButton"

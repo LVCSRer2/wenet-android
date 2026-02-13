@@ -113,8 +113,15 @@ public class MainActivity extends AppCompatActivity {
     for (String file : assetMgr.list("")) {
       if (resource.contains(file)) {
         File dst = new File(context.getFilesDir(), file);
-        if (!dst.exists() || dst.length() == 0) {
-          Log.i(LOG_TAG, "Unzipping " + file + " to " + dst.getAbsolutePath());
+        long assetSize = -1;
+        try (InputStream tmp = assetMgr.open(file)) {
+          assetSize = 0;
+          byte[] buf = new byte[4 * 1024];
+          int n;
+          while ((n = tmp.read(buf)) != -1) { assetSize += n; }
+        }
+        if (!dst.exists() || dst.length() == 0 || dst.length() != assetSize) {
+          Log.i(LOG_TAG, "Copying " + file + " to " + dst.getAbsolutePath());
           InputStream is = assetMgr.open(file);
           OutputStream os = new FileOutputStream(dst);
           byte[] buffer = new byte[4 * 1024];

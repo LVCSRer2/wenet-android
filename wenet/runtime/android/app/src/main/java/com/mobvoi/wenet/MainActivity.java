@@ -56,7 +56,7 @@ public class MainActivity extends AppCompatActivity {
 
   private final int MY_PERMISSIONS_RECORD_AUDIO = 1;
   private static final String LOG_TAG = "WENET";
-  private static final int SAMPLE_RATE = 16000;
+  private static final int SAMPLE_RATE = 8000;
   private static final int MAX_QUEUE_SIZE = 2500;
   private static final int PLAYBACK_UPDATE_MS = 50;
   private static final List<String> resource;
@@ -562,7 +562,7 @@ public class MainActivity extends AppCompatActivity {
   }
 
   private void seekToMs(int ms) {
-    // Convert ms to byte position (16kHz, 16-bit, mono = 2 bytes per sample)
+    // Convert ms to byte position (8kHz, 16-bit, mono = 2 bytes per sample)
     int bytePos = (int) ((long) ms * SAMPLE_RATE * 2 / 1000);
     // Align to 2-byte boundary
     bytePos = bytePos & ~1;

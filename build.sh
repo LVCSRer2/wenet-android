@@ -121,6 +121,7 @@ elif [ "$BACKEND" = "onnxruntime" ] || [ "$BACKEND" = "onnxruntime-nnapi" ]; the
   fi
   cp "$ONNX_MODEL_DIR/encoder.quant.onnx" "$ASSETS_DIR/encoder.onnx"
   cp "$ONNX_MODEL_DIR/ctc.quant.onnx" "$ASSETS_DIR/ctc.onnx"
+  cp "$WORK_DIR/model/units.txt" "$ASSETS_DIR/"
   echo "  assets ← encoder.onnx (quantized, $(du -h "$ASSETS_DIR/encoder.onnx" | cut -f1))"
   echo "  assets ← ctc.onnx (quantized, $(du -h "$ASSETS_DIR/ctc.onnx" | cut -f1))"
 fi

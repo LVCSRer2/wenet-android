@@ -41,7 +41,7 @@ std::string total_result;  // NOLINT
 std::string timed_result_json;  // JSON array of {w, s, e}
 int total_samples = 0;
 int endpoint_start_sample = 0;
-const int kSampleRate = 16000;
+const int kSampleRate = 8000;
 
 // Format samples to "MM:SS.S"
 std::string FormatTime(int samples) {
@@ -90,7 +90,7 @@ void init(JNIEnv* env, jobject, jstring jModelDir) {
   PostProcessOptions post_process_opts;
   resource->post_processor = std::make_shared<PostProcessor>(post_process_opts);
 
-  feature_config = std::make_shared<FeaturePipelineConfig>(80, 16000);
+  feature_config = std::make_shared<FeaturePipelineConfig>(80, 8000);
   feature_pipeline = std::make_shared<FeaturePipeline>(*feature_config);
 
   decode_config = std::make_shared<DecodeOptions>();
@@ -118,7 +118,7 @@ void accept_waveform(JNIEnv* env, jobject, jshortArray jWaveform) {
   int16_t* waveform = env->GetShortArrayElements(jWaveform, 0);
   feature_pipeline->AcceptWaveform(waveform, size);
   total_samples += size;
-  LOG(INFO) << "wenet accept waveform in ms: " << int(size / 16);
+  LOG(INFO) << "wenet accept waveform in ms: " << int(size / 8);
 }
 
 void set_input_finished() {

@@ -32,7 +32,7 @@ Please note the wifi and data has been disabled in the demo so there is no netwo
 
 ### 기능
 
-- **녹음 저장**: 녹음 시 raw PCM (16kHz, 16-bit, mono)과 단어별 타임스탬프가 포함된 `result.json`이 함께 저장됩니다.
+- **녹음 저장**: 녹음 시 raw PCM (8kHz, 16-bit, mono)과 단어별 타임스탬프가 포함된 `result.json`이 함께 저장됩니다.
 - **카라오케 재생**: 재생 중 현재 발화 중인 단어가 노란색으로 하이라이트되며, 오디오 위치와 동기화됩니다.
 - **단어 터치 → 이동**: 텍스트의 단어를 터치하면 해당 위치로 오디오가 이동하여 재생됩니다.
 - **슬라이드바(SeekBar)**: 드래그하여 녹음 내 원하는 위치로 이동할 수 있습니다.
@@ -44,7 +44,7 @@ Please note the wifi and data has been disabled in the demo so there is no netwo
 
 ```
 {filesDir}/recordings/{yyyyMMdd_HHmmss}/
-  ├── audio.pcm        # raw PCM (16kHz, 16-bit, mono)
+  ├── audio.pcm        # raw PCM (8kHz, 16-bit, mono)
   └── result.json      # [{"w":"단어","s":시작ms,"e":종료ms}, ...]
 ```
 

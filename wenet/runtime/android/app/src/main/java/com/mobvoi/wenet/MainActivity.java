@@ -63,12 +63,17 @@ public class MainActivity extends AppCompatActivity {
   private static final int SAMPLE_RATE = 8000;
   private static final int MAX_QUEUE_SIZE = 2500;
   private static final int PLAYBACK_UPDATE_MS = 50;
+  private static final String PREFS_NAME = "wenet_settings";
+  private static final String KEY_MODEL_TYPE = "model_type";
+  private boolean modelLoaded = false;
   private static final List<String> resource;
   static {
     if ("libtorch".equals(BuildConfig.BACKEND)) {
       resource = Arrays.asList("final.zip", "units.txt");
     } else {
-      resource = Arrays.asList("encoder.onnx", "ctc.onnx", "units.txt");
+      resource = Arrays.asList(
+          "encoder.full.onnx", "encoder.quant.onnx",
+          "ctc.full.onnx", "ctc.quant.onnx", "units.txt");
     }
   }
 
@@ -187,7 +192,11 @@ public class MainActivity extends AppCompatActivity {
     TextView textView = findViewById(R.id.textView);
     textView.setText("");
     textView.setMovementMethod(LinkMovementMethod.getInstance());
-    Recognize.init(getFilesDir().getPath());
+
+    Button button = findViewById(R.id.button);
+    button.setEnabled(false);
+
+    showModelSelectionDialog();
 
     Button copyButton = findViewById(R.id.copyButton);
     copyButton.setOnClickListener(view -> {
@@ -201,7 +210,6 @@ public class MainActivity extends AppCompatActivity {
       }
     });
 
-    Button button = findViewById(R.id.button);
     button.setText("Start Record");
     button.setOnClickListener(view -> {
       if (!startRecord) {
@@ -264,7 +272,69 @@ public class MainActivity extends AppCompatActivity {
     // Settings button
     Button settingsButton = findViewById(R.id.settingsButton);
     settingsButton.setOnClickListener(v ->
-        startActivity(new Intent(this, SettingsActivity.class)));
+        startActivityForResult(new Intent(this, SettingsActivity.class), 100));
+  }
+
+  @Override
+  protected void onActivityResult(int requestCode, int resultCode, Intent data) {
+    super.onActivityResult(requestCode, resultCode, data);
+    if (requestCode == 100 && resultCode == RESULT_OK && data != null) {
+      String modelType = data.getStringExtra("model_type");
+      if (modelType != null) {
+        loadModel(modelType);
+      }
+    }
+  }
+
+  private void showModelSelectionDialog() {
+    String[] items = {"Full (비양자화)", "Quantized (양자화)"};
+    String[] values = {"full", "quant"};
+    new AlertDialog.Builder(this)
+        .setTitle("모델 선택")
+        .setCancelable(false)
+        .setItems(items, (dialog, which) -> loadModel(values[which]))
+        .show();
+  }
+
+  private void loadModel(String modelType) {
+    Toast.makeText(this, "모델 로딩 중...", Toast.LENGTH_SHORT).show();
+    new Thread(() -> {
+      try {
+        String prefix = "full".equals(modelType) ? "full" : "quant";
+        File filesDir = getFilesDir();
+        copyFile(new File(filesDir, "encoder." + prefix + ".onnx"),
+            new File(filesDir, "encoder.onnx"));
+        copyFile(new File(filesDir, "ctc." + prefix + ".onnx"),
+            new File(filesDir, "ctc.onnx"));
+        Recognize.init(filesDir.getPath());
+        modelLoaded = true;
+        getSharedPreferences(PREFS_NAME, MODE_PRIVATE).edit()
+            .putString(KEY_MODEL_TYPE, modelType).apply();
+        Log.i(LOG_TAG, "Model loaded: " + modelType);
+        runOnUiThread(() -> {
+          Button btn = findViewById(R.id.button);
+          btn.setEnabled(true);
+          Toast.makeText(this,
+              "모델 로드 완료 (" + ("full".equals(modelType) ? "Full" : "Quantized") + ")",
+              Toast.LENGTH_SHORT).show();
+        });
+      } catch (Exception e) {
+        Log.e(LOG_TAG, "Model load error: " + e.getMessage());
+        runOnUiThread(() ->
+            Toast.makeText(this, "모델 로드 실패", Toast.LENGTH_LONG).show());
+      }
+    }).start();
+  }
+
+  private void copyFile(File src, File dst) throws IOException {
+    FileInputStream fis = new FileInputStream(src);
+    FileOutputStream fos = new FileOutputStream(dst);
+    byte[] buf = new byte[4096];
+    int len;
+    while ((len = fis.read(buf)) != -1) { fos.write(buf, 0, len); }
+    fos.flush();
+    fos.close();
+    fis.close();
   }
 
   @Override

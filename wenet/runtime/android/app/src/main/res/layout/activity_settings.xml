@@ -8,6 +8,35 @@
     <TextView
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
+        android:text="Model"
+        android:textSize="16sp"
+        android:layout_marginBottom="8dp" />
+
+    <RadioGroup
+        android:id="@+id/modelRadioGroup"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:layout_marginBottom="24dp">
+
+        <RadioButton
+            android:id="@+id/radioFull"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Full" />
+
+        <RadioButton
+            android:id="@+id/radioQuant"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Quantized"
+            android:layout_marginStart="16dp" />
+
+    </RadioGroup>
+
+    <TextView
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
         android:text="Slack Webhook URL"
         android:textSize="16sp"
         android:layout_marginBottom="8dp" />

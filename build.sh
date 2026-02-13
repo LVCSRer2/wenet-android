@@ -3,7 +3,7 @@ set -e
 
 # ============================================================
 # WeNet Android 빌드 스크립트
-# 사용법: ./build.sh --backend=libtorch|onnxruntime|onnxruntime-nnapi [--install]
+# 사용법: ./build.sh --backend=libtorch|onnxruntime|onnxruntime-nnapi [--quant] [--install]
 # ============================================================
 
 ANDROID_SDK="/home/jieunstage/android-sdk"
@@ -98,7 +98,9 @@ echo ""
 echo "=== 4단계: 모델 파일 준비 ==="
 
 # assets 디렉토리에서 모델 파일 정리
-rm -f "$ASSETS_DIR/final.zip" "$ASSETS_DIR/encoder.onnx" "$ASSETS_DIR/ctc.onnx"
+rm -f "$ASSETS_DIR/final.zip" "$ASSETS_DIR/encoder.onnx" "$ASSETS_DIR/ctc.onnx" \
+     "$ASSETS_DIR/encoder.full.onnx" "$ASSETS_DIR/encoder.quant.onnx" \
+     "$ASSETS_DIR/ctc.full.onnx" "$ASSETS_DIR/ctc.quant.onnx"
 
 LIBTORCH_MODEL_DIR="$WORK_DIR/gigaspeech_u2pp_conformer_libtorch_quant"
 ONNX_MODEL_DIR="$WORK_DIR/onnx_model"
@@ -119,11 +121,15 @@ elif [ "$BACKEND" = "onnxruntime" ] || [ "$BACKEND" = "onnxruntime-nnapi" ]; the
     echo "먼저 ONNX 모델을 export 하세요."
     exit 1
   fi
-  cp "$ONNX_MODEL_DIR/encoder.quant.onnx" "$ASSETS_DIR/encoder.onnx"
-  cp "$ONNX_MODEL_DIR/ctc.quant.onnx" "$ASSETS_DIR/ctc.onnx"
+  cp "$ONNX_MODEL_DIR/encoder.onnx" "$ASSETS_DIR/encoder.full.onnx"
+  cp "$ONNX_MODEL_DIR/ctc.onnx" "$ASSETS_DIR/ctc.full.onnx"
+  cp "$ONNX_MODEL_DIR/encoder.quant.onnx" "$ASSETS_DIR/encoder.quant.onnx"
+  cp "$ONNX_MODEL_DIR/ctc.quant.onnx" "$ASSETS_DIR/ctc.quant.onnx"
   cp "$WORK_DIR/model/units.txt" "$ASSETS_DIR/"
-  echo "  assets ← encoder.onnx (quantized, $(du -h "$ASSETS_DIR/encoder.onnx" | cut -f1))"
-  echo "  assets ← ctc.onnx (quantized, $(du -h "$ASSETS_DIR/ctc.onnx" | cut -f1))"
+  echo "  assets ← encoder.full.onnx ($(du -h "$ASSETS_DIR/encoder.full.onnx" | cut -f1))"
+  echo "  assets ← encoder.quant.onnx ($(du -h "$ASSETS_DIR/encoder.quant.onnx" | cut -f1))"
+  echo "  assets ← ctc.full.onnx ($(du -h "$ASSETS_DIR/ctc.full.onnx" | cut -f1))"
+  echo "  assets ← ctc.quant.onnx ($(du -h "$ASSETS_DIR/ctc.quant.onnx" | cut -f1))"
 fi
 echo "  assets ← units.txt"
 

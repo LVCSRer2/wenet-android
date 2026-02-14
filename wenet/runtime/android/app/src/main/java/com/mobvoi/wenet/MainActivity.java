@@ -478,8 +478,8 @@ public class MainActivity extends AppCompatActivity {
         try {
           short[] data = bufferQueue.take();
           Recognize.acceptWaveform(data);
-          String result = Recognize.getResult();
-          runOnUiThread(() -> updateResultAndScroll(result));
+          final String d = buildLiveDisplay();
+          runOnUiThread(() -> updateResultAndScroll(d));
         } catch (InterruptedException e) {
           Log.e(LOG_TAG, e.getMessage());
         }
@@ -488,8 +488,8 @@ public class MainActivity extends AppCompatActivity {
       // Wait for final result
       while (true) {
         if (!Recognize.getFinished()) {
-          String result = Recognize.getResult();
-          runOnUiThread(() -> updateResultAndScroll(result));
+          final String d = buildLiveDisplay();
+          runOnUiThread(() -> updateResultAndScroll(d));
         } else {
           // Save result.json with timed result
           saveTimedResult();
@@ -530,6 +530,26 @@ public class MainActivity extends AppCompatActivity {
     } catch (Exception e) {
       Log.e(LOG_TAG, "Error saving timed result: " + e.getMessage());
     }
+  }
+
+  /** Build live display: timestamped confirmed text + partial result on a new line. */
+  private String buildLiveDisplay() {
+    String confirmed = buildTimestampedText(Recognize.getTimedResult());
+    String fullResult = Recognize.getResult();
+    // getResult() returns "확정문장 [00:00.0-00:03.5]\n확정문장2 [tag]\n현재partial"
+    // The last segment without a time tag is the partial result
+    String partial = "";
+    if (fullResult != null && !fullResult.isEmpty()) {
+      // Split by newline, check if the last line has a time tag [xx:xx.x-xx:xx.x]
+      String[] lines = fullResult.split("\n");
+      String lastLine = lines[lines.length - 1].trim();
+      if (!lastLine.isEmpty() && !lastLine.matches(".*\\[\\d{2}:\\d{2}\\.\\d+-\\d{2}:\\d{2}\\.\\d+\\]$")) {
+        partial = lastLine;
+      }
+    }
+    if (confirmed.isEmpty()) return partial;
+    if (partial.isEmpty()) return confirmed;
+    return confirmed + "\n" + partial;
   }
 
   private String buildTimestampedText(String timedJson) {
@@ -838,7 +858,7 @@ public class MainActivity extends AppCompatActivity {
 
   // --- Karaoke ---
 
-  /** Build the SpannableStringBuilder once with ClickableSpans (called once on entering playback). */
+  /** Build the SpannableStringBuilder in timestamped format with ClickableSpans. */
   private void buildKaraokeText() {
     if (wordSpans == null || wordSpans.isEmpty()) return;
 
@@ -849,13 +869,34 @@ public class MainActivity extends AppCompatActivity {
     currentBgSpan = null;
     currentFgSpan = null;
 
+    // Group words into sentences, inserting [M:SS] prefix per sentence
+    int sentenceStartMs = -1;
+    boolean needNewLine = false;
     for (int i = 0; i < wordSpans.size(); i++) {
       WordSpan ws = wordSpans.get(i);
-      karaokeSpanStarts[i] = karaokeSSB.length();
-      karaokeSSB.append(ws.word);
-      karaokeSpanEnds[i] = karaokeSSB.length();
-      if (i < wordSpans.size() - 1) {
+
+      // Start of a new sentence: insert timestamp prefix
+      if (sentenceStartMs == -1) {
+        if (needNewLine) karaokeSSB.append("\n");
+        sentenceStartMs = ws.startMs;
+        karaokeSSB.append("[").append(formatTimeMs(sentenceStartMs)).append("] ");
+      }
+
+      // Skip space token but add a space character
+      if ("\u2581".equals(ws.word)) {
+        karaokeSpanStarts[i] = karaokeSSB.length();
         karaokeSSB.append(" ");
+        karaokeSpanEnds[i] = karaokeSSB.length();
+      } else {
+        karaokeSpanStarts[i] = karaokeSSB.length();
+        karaokeSSB.append(ws.word);
+        karaokeSpanEnds[i] = karaokeSSB.length();
+      }
+
+      // End of sentence
+      if (".".equals(ws.word) || "?".equals(ws.word) || "!".equals(ws.word)) {
+        sentenceStartMs = -1;
+        needNewLine = true;
       }
     }
 

@@ -65,7 +65,9 @@ public class MainActivity extends AppCompatActivity {
   private static final int PLAYBACK_UPDATE_MS = 50;
   private static final String PREFS_NAME = "wenet_settings";
   private static final String KEY_MODEL_TYPE = "model_type";
+  private static final String KEY_VIZ_TYPE = "viz_type";
   private boolean modelLoaded = false;
+  private boolean useSpectrogram = false;
   private static final List<String> resource;
   static {
     if ("libtorch".equals(BuildConfig.BACKEND)) {
@@ -198,6 +200,11 @@ public class MainActivity extends AppCompatActivity {
 
     showModelSelectionDialog();
 
+    // Visualization preference
+    useSpectrogram = "spectrogram".equals(
+        getSharedPreferences(PREFS_NAME, MODE_PRIVATE).getString(KEY_VIZ_TYPE, "waveform"));
+    updateVisualizationVisibility();
+
     Button copyButton = findViewById(R.id.copyButton);
     copyButton.setOnClickListener(view -> {
       String text = (timestampedResult != null && !timestampedResult.isEmpty())
@@ -282,6 +289,11 @@ public class MainActivity extends AppCompatActivity {
       String modelType = data.getStringExtra("model_type");
       if (modelType != null) {
         loadModel(modelType);
+      }
+      String vizType = data.getStringExtra("viz_type");
+      if (vizType != null) {
+        useSpectrogram = "spectrogram".equals(vizType);
+        updateVisualizationVisibility();
       }
     }
   }
@@ -409,12 +421,19 @@ public class MainActivity extends AppCompatActivity {
   private void startRecordThread() {
     new Thread(() -> {
       VoiceRectView voiceView = findViewById(R.id.voiceRectView);
+      SpectrogramView spectrogramView = findViewById(R.id.spectrogramView);
       record.startRecording();
       Process.setThreadPriority(Process.THREAD_PRIORITY_AUDIO);
       while (startRecord) {
         short[] buffer = new short[miniBufferSize / 2];
         int read = record.read(buffer, 0, buffer.length);
-        voiceView.add(calculateDb(buffer));
+        if (read > 0) {
+          if (useSpectrogram) {
+            spectrogramView.addSamples(buffer, read);
+          } else {
+            voiceView.add(calculateDb(buffer));
+          }
+        }
         if (AudioRecord.ERROR_INVALID_OPERATION != read) {
           // Save PCM to file
           if (pcmOutputStream != null) {
@@ -439,7 +458,11 @@ public class MainActivity extends AppCompatActivity {
       }
       record.stop();
       stopBluetoothMic();
-      voiceView.zero();
+      if (useSpectrogram) {
+        spectrogramView.clear();
+      } else {
+        voiceView.zero();
+      }
       // Close PCM file
       if (pcmOutputStream != null) {
         try {
@@ -462,6 +485,18 @@ public class MainActivity extends AppCompatActivity {
     energy = (10 * Math.log10(1 + energy)) / 100;
     energy = Math.min(energy, 1.0);
     return energy;
+  }
+
+  private void updateVisualizationVisibility() {
+    VoiceRectView voiceView = findViewById(R.id.voiceRectView);
+    SpectrogramView spectrogramView = findViewById(R.id.spectrogramView);
+    if (useSpectrogram) {
+      voiceView.setVisibility(View.GONE);
+      spectrogramView.setVisibility(View.VISIBLE);
+    } else {
+      voiceView.setVisibility(View.VISIBLE);
+      spectrogramView.setVisibility(View.GONE);
+    }
   }
 
   private void updateResultAndScroll(String text) {

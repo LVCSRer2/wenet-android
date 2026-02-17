@@ -13,7 +13,7 @@
       android:layout_height="0dp"
       android:background="#F4F4F4"
       android:fadingEdge="vertical"
-      app:layout_constraintBottom_toTopOf="@+id/voiceRectView"
+      app:layout_constraintBottom_toTopOf="@+id/visualizationContainer"
       app:layout_constraintEnd_toEndOf="parent"
       app:layout_constraintStart_toStartOf="parent"
       app:layout_constraintTop_toTopOf="parent"
@@ -33,20 +33,34 @@
 
     </ScrollView>
 
-    <com.mobvoi.wenet.VoiceRectView
-      android:id="@+id/voiceRectView"
+    <FrameLayout
+      android:id="@+id/visualizationContainer"
       android:layout_width="0dp"
       android:layout_height="0dp"
       app:layout_constraintHeight_percent="0.15"
-      VoiceRect:RectCount="50"
-      VoiceRect:RectDownColor="@color/green"
-      VoiceRect:RectOffset="0"
-      VoiceRect:RectSpeed="300"
-      VoiceRect:RectTopColor="@color/green"
       app:layout_constraintBottom_toTopOf="@+id/playbackLayout"
       app:layout_constraintEnd_toEndOf="parent"
       app:layout_constraintStart_toStartOf="parent"
-      app:layout_constraintTop_toBottomOf="@+id/textView" />
+      app:layout_constraintTop_toBottomOf="@+id/textView">
+
+      <com.mobvoi.wenet.VoiceRectView
+        android:id="@+id/voiceRectView"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        VoiceRect:RectCount="50"
+        VoiceRect:RectDownColor="@color/green"
+        VoiceRect:RectOffset="0"
+        VoiceRect:RectSpeed="300"
+        VoiceRect:RectTopColor="@color/green"
+        android:visibility="visible" />
+
+      <com.mobvoi.wenet.SpectrogramView
+        android:id="@+id/spectrogramView"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:visibility="gone" />
+
+    </FrameLayout>
 
     <LinearLayout
       android:id="@+id/playbackLayout"

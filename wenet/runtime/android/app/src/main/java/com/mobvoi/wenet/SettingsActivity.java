@@ -15,6 +15,7 @@ public class SettingsActivity extends AppCompatActivity {
     private static final String PREFS_NAME = "wenet_settings";
     private static final String KEY_WEBHOOK_URL = "slack_webhook_url";
     private static final String KEY_MODEL_TYPE = "model_type";
+    private static final String KEY_VIZ_TYPE = "viz_type";
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -36,6 +37,15 @@ public class SettingsActivity extends AppCompatActivity {
             modelGroup.check(R.id.radioQuant);
         }
 
+        // Visualization selection
+        RadioGroup vizGroup = findViewById(R.id.vizRadioGroup);
+        String currentViz = prefs.getString(KEY_VIZ_TYPE, "waveform");
+        if ("spectrogram".equals(currentViz)) {
+            vizGroup.check(R.id.radioSpectrogram);
+        } else {
+            vizGroup.check(R.id.radioWaveform);
+        }
+
         Button saveButton = findViewById(R.id.saveButton);
         saveButton.setOnClickListener(v -> {
             String url = urlEditText.getText().toString().trim();
@@ -47,9 +57,20 @@ public class SettingsActivity extends AppCompatActivity {
             String oldModel = prefs.getString(KEY_MODEL_TYPE, "");
             prefs.edit().putString(KEY_MODEL_TYPE, newModel).apply();
 
+            // Save viz type
+            String newViz = vizGroup.getCheckedRadioButtonId() == R.id.radioSpectrogram
+                ? "spectrogram" : "waveform";
+            prefs.edit().putString(KEY_VIZ_TYPE, newViz).apply();
+
+            Intent result = new Intent();
+            boolean changed = false;
             if (!newModel.equals(oldModel)) {
-                Intent result = new Intent();
                 result.putExtra("model_type", newModel);
+                changed = true;
+            }
+            result.putExtra("viz_type", newViz);
+            changed = true;
+            if (changed) {
                 setResult(RESULT_OK, result);
             }
 

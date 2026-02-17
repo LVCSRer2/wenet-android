@@ -60,6 +60,77 @@
         android:layout_height="match_parent"
         android:visibility="gone" />
 
+      <LinearLayout
+        android:id="@+id/dbRangeLayout"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_gravity="bottom"
+        android:orientation="vertical"
+        android:background="#80000000"
+        android:paddingStart="8dp"
+        android:paddingEnd="8dp"
+        android:paddingTop="2dp"
+        android:paddingBottom="2dp"
+        android:visibility="gone">
+
+        <TextView
+          android:id="@+id/dbRangeLabel"
+          android:layout_width="wrap_content"
+          android:layout_height="wrap_content"
+          android:text="dB: -10 ~ 80"
+          android:textColor="#FFFFFF"
+          android:textSize="10sp" />
+
+        <LinearLayout
+          android:layout_width="match_parent"
+          android:layout_height="wrap_content"
+          android:orientation="horizontal"
+          android:gravity="center_vertical">
+
+          <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Floor"
+            android:textColor="#AAAAAA"
+            android:textSize="9sp" />
+
+          <SeekBar
+            android:id="@+id/dbFloorSeekBar"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:layout_marginStart="4dp"
+            android:max="60"
+            android:progress="10" />
+
+        </LinearLayout>
+
+        <LinearLayout
+          android:layout_width="match_parent"
+          android:layout_height="wrap_content"
+          android:orientation="horizontal"
+          android:gravity="center_vertical">
+
+          <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Ceil"
+            android:textColor="#AAAAAA"
+            android:textSize="9sp" />
+
+          <SeekBar
+            android:id="@+id/dbCeilSeekBar"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:layout_marginStart="4dp"
+            android:max="60"
+            android:progress="60" />
+
+        </LinearLayout>
+
+      </LinearLayout>
+
     </FrameLayout>
 
     <LinearLayout

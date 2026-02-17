@@ -1,26 +1,33 @@
 package com.mobvoi.wenet;
 
 import android.content.Context;
+import android.graphics.Bitmap;
 import android.graphics.Canvas;
 import android.graphics.Color;
+import android.graphics.Matrix;
 import android.graphics.Paint;
+import android.graphics.Rect;
 import android.util.AttributeSet;
 import android.view.View;
 
 public class SpectrogramView extends View {
 
-    private static final int FFT_SIZE = 256;
+    private static final int FFT_SIZE = 512;
     private static final int FREQ_BINS = FFT_SIZE / 2;
     private static final int MAX_COLUMNS = 200;
 
-    private final Paint paint = new Paint();
-    // Grid: [column][freqBin] storing packed ARGB colors
-    private final int[][] grid = new int[MAX_COLUMNS][FREQ_BINS];
+    private final Paint bitmapPaint = new Paint(Paint.FILTER_BITMAP_FLAG);
+    private volatile double dbFloor = -10.0;
+    private volatile double dbCeil = 80.0;
+
+    // Offscreen bitmap: MAX_COLUMNS x FREQ_BINS, updated from recording thread
+    private Bitmap offscreen;
+    private final int[] pixelRow = new int[FREQ_BINS]; // temp buffer for one column
     private final Object lock = new Object();
     private int currentColumn = 0;
-    private int totalColumns = 0;
+    private boolean wrapped = false;
 
-    // Circular sample buffer for accumulating 256 samples
+    // Circular sample buffer
     private final short[] sampleBuffer = new short[FFT_SIZE];
     private int sampleCount = 0;
 
@@ -50,11 +57,12 @@ public class SpectrogramView extends View {
         for (int i = 0; i < FFT_SIZE; i++) {
             hannWindow[i] = 0.5 * (1.0 - Math.cos(2.0 * Math.PI * i / (FFT_SIZE - 1)));
         }
+        offscreen = Bitmap.createBitmap(MAX_COLUMNS, FREQ_BINS, Bitmap.Config.ARGB_8888);
+        offscreen.eraseColor(Color.BLACK);
     }
 
     /**
      * Called from recording thread with raw PCM samples.
-     * Accumulates samples and runs FFT when 256 samples are collected.
      */
     public void addSamples(short[] samples, int length) {
         if (samples == null || length <= 0) return;
@@ -68,38 +76,40 @@ public class SpectrogramView extends View {
     }
 
     private void processWindow() {
-        // Apply Hann window and copy to FFT arrays
         for (int i = 0; i < FFT_SIZE; i++) {
             fftReal[i] = sampleBuffer[i] * hannWindow[i];
             fftImag[i] = 0.0;
         }
 
-        // Radix-2 Cooley-Tukey FFT
         fft(fftReal, fftImag, FFT_SIZE);
 
-        // Compute magnitude in dB, map to colors, and write to grid
-        int[] col = new int[FREQ_BINS];
+        // Compute colors for this column (low freq at bottom)
         for (int k = 0; k < FREQ_BINS; k++) {
             double mag = Math.sqrt(fftReal[k] * fftReal[k] + fftImag[k] * fftImag[k]);
+            mag /= FFT_SIZE;
             double db = 20.0 * Math.log10(mag + 1e-10);
-            double norm = (db + 20.0) / 100.0;
+            double floor = dbFloor;
+            double ceil = dbCeil;
+            double range = ceil - floor;
+            if (range < 1.0) range = 1.0;
+            double norm = (db - floor) / range;
             norm = Math.max(0.0, Math.min(1.0, norm));
-            // Store low freq at bottom: index 0 = top of view = highest freq bin
-            col[FREQ_BINS - 1 - k] = heatmapColor(norm);
+            pixelRow[FREQ_BINS - 1 - k] = heatmapColor(norm);
         }
 
+        // Write column directly to offscreen bitmap
         synchronized (lock) {
-            grid[currentColumn] = col;
-            currentColumn = (currentColumn + 1) % MAX_COLUMNS;
-            totalColumns++;
+            offscreen.setPixels(pixelRow, 0, 1, currentColumn, 0, 1, FREQ_BINS);
+            currentColumn++;
+            if (currentColumn >= MAX_COLUMNS) {
+                currentColumn = 0;
+                wrapped = true;
+            }
         }
 
         postInvalidate();
     }
 
-    /**
-     * Radix-2 Cooley-Tukey in-place FFT.
-     */
     private static void fft(double[] real, double[] imag, int n) {
         int j = 0;
         for (int i = 0; i < n; i++) {
@@ -167,47 +177,53 @@ public class SpectrogramView extends View {
         if (viewW == 0 || viewH == 0) return;
 
         int snapColumn;
-        int snapTotal;
-        int[][] snapGrid;
-
+        boolean snapWrapped;
         synchronized (lock) {
             snapColumn = currentColumn;
-            snapTotal = totalColumns;
-            // Shallow copy of references is fine — each col array is replaced atomically
-            snapGrid = grid;
+            snapWrapped = wrapped;
         }
 
-        int count = Math.min(snapTotal, MAX_COLUMNS);
-        if (count == 0) return;
+        if (snapColumn == 0 && !snapWrapped) return;
 
-        float colWidth = (float) viewW / count;
-        float binH = (float) viewH / FREQ_BINS;
+        Rect dst = new Rect(0, 0, viewW, viewH);
 
-        for (int i = 0; i < count; i++) {
-            int col;
-            if (snapTotal <= MAX_COLUMNS) {
-                col = i;
-            } else {
-                col = (snapColumn + i) % MAX_COLUMNS;
+        if (!snapWrapped) {
+            // Not yet filled: draw columns 0..snapColumn-1
+            Rect src = new Rect(0, 0, snapColumn, FREQ_BINS);
+            canvas.drawBitmap(offscreen, src, dst, bitmapPaint);
+        } else {
+            // Circular: oldest is at snapColumn, newest is at snapColumn-1
+            // Draw two strips: [snapColumn..MAX_COLUMNS-1] then [0..snapColumn-1]
+            int rightPart = MAX_COLUMNS - snapColumn;
+            int leftW = (int) ((long) rightPart * viewW / MAX_COLUMNS);
+
+            if (rightPart > 0) {
+                Rect src1 = new Rect(snapColumn, 0, MAX_COLUMNS, FREQ_BINS);
+                Rect dst1 = new Rect(0, 0, leftW, viewH);
+                canvas.drawBitmap(offscreen, src1, dst1, bitmapPaint);
             }
-            float left = i * colWidth;
-            float right = (i + 1) * colWidth;
-            int[] colData = snapGrid[col];
-            for (int k = 0; k < FREQ_BINS; k++) {
-                paint.setColor(colData[k]);
-                canvas.drawRect(left, k * binH, right, (k + 1) * binH, paint);
+            if (snapColumn > 0) {
+                Rect src2 = new Rect(0, 0, snapColumn, FREQ_BINS);
+                Rect dst2 = new Rect(leftW, 0, viewW, viewH);
+                canvas.drawBitmap(offscreen, src2, dst2, bitmapPaint);
             }
         }
+    }
+
+    public void setDbFloor(double floor) {
+        this.dbFloor = floor;
+    }
+
+    public void setDbCeil(double ceil) {
+        this.dbCeil = ceil;
     }
 
     public void clear() {
         synchronized (lock) {
             sampleCount = 0;
             currentColumn = 0;
-            totalColumns = 0;
-            for (int c = 0; c < MAX_COLUMNS; c++) {
-                grid[c] = new int[FREQ_BINS];
-            }
+            wrapped = false;
+            offscreen.eraseColor(Color.BLACK);
         }
         postInvalidate();
     }

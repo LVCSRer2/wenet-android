@@ -205,6 +205,61 @@ public class MainActivity extends AppCompatActivity {
         getSharedPreferences(PREFS_NAME, MODE_PRIVATE).getString(KEY_VIZ_TYPE, "waveform"));
     updateVisualizationVisibility();
 
+    // dB range sliders for spectrogram
+    // Floor SeekBar: 0..60 → dB -20..40, Ceil SeekBar: 0..60 → dB 40..100
+    SeekBar dbFloorSeekBar = findViewById(R.id.dbFloorSeekBar);
+    SeekBar dbCeilSeekBar = findViewById(R.id.dbCeilSeekBar);
+    TextView dbRangeLabel = findViewById(R.id.dbRangeLabel);
+    SpectrogramView spectrogramView = findViewById(R.id.spectrogramView);
+
+    int savedFloorProgress = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
+        .getInt("db_floor_progress", 10);
+    int savedCeilProgress = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
+        .getInt("db_ceil_progress", 40);
+    dbFloorSeekBar.setProgress(savedFloorProgress);
+    dbCeilSeekBar.setProgress(savedCeilProgress);
+    double initFloor = savedFloorProgress - 20.0;
+    double initCeil = savedCeilProgress + 40.0;
+    spectrogramView.setDbFloor(initFloor);
+    spectrogramView.setDbCeil(initCeil);
+    dbRangeLabel.setText(String.format("dB: %.0f ~ %.0f", initFloor, initCeil));
+
+    dbFloorSeekBar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+      @Override
+      public void onProgressChanged(SeekBar sb, int progress, boolean fromUser) {
+        double floor = progress - 20.0;
+        double ceil = ((SeekBar) findViewById(R.id.dbCeilSeekBar)).getProgress() + 40.0;
+        ((SpectrogramView) findViewById(R.id.spectrogramView)).setDbFloor(floor);
+        ((TextView) findViewById(R.id.dbRangeLabel))
+            .setText(String.format("dB: %.0f ~ %.0f", floor, ceil));
+      }
+      @Override
+      public void onStartTrackingTouch(SeekBar sb) {}
+      @Override
+      public void onStopTrackingTouch(SeekBar sb) {
+        getSharedPreferences(PREFS_NAME, MODE_PRIVATE).edit()
+            .putInt("db_floor_progress", sb.getProgress()).apply();
+      }
+    });
+
+    dbCeilSeekBar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+      @Override
+      public void onProgressChanged(SeekBar sb, int progress, boolean fromUser) {
+        double ceil = progress + 40.0;
+        double floor = ((SeekBar) findViewById(R.id.dbFloorSeekBar)).getProgress() - 20.0;
+        ((SpectrogramView) findViewById(R.id.spectrogramView)).setDbCeil(ceil);
+        ((TextView) findViewById(R.id.dbRangeLabel))
+            .setText(String.format("dB: %.0f ~ %.0f", floor, ceil));
+      }
+      @Override
+      public void onStartTrackingTouch(SeekBar sb) {}
+      @Override
+      public void onStopTrackingTouch(SeekBar sb) {
+        getSharedPreferences(PREFS_NAME, MODE_PRIVATE).edit()
+            .putInt("db_ceil_progress", sb.getProgress()).apply();
+      }
+    });
+
     Button copyButton = findViewById(R.id.copyButton);
     copyButton.setOnClickListener(view -> {
       String text = (timestampedResult != null && !timestampedResult.isEmpty())
@@ -490,12 +545,15 @@ public class MainActivity extends AppCompatActivity {
   private void updateVisualizationVisibility() {
     VoiceRectView voiceView = findViewById(R.id.voiceRectView);
     SpectrogramView spectrogramView = findViewById(R.id.spectrogramView);
+    View dbRangeLayout = findViewById(R.id.dbRangeLayout);
     if (useSpectrogram) {
       voiceView.setVisibility(View.GONE);
       spectrogramView.setVisibility(View.VISIBLE);
+      dbRangeLayout.setVisibility(View.VISIBLE);
     } else {
       voiceView.setVisibility(View.VISIBLE);
       spectrogramView.setVisibility(View.GONE);
+      dbRangeLayout.setVisibility(View.GONE);
     }
   }
 

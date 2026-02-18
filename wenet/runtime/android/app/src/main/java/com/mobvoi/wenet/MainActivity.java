@@ -104,12 +104,12 @@ public class MainActivity extends AppCompatActivity {
   private String currentRecordingName = null;
   private FileOutputStream pcmOutputStream = null;
 
-  // Playback
+  // Playback (file-streaming, no full load into memory)
   private AudioTrack audioTrack = null;
-  private byte[] pcmData = null;
-  private int pcmDataLength = 0;
+  private String playbackAudioPath = null;
+  private long pcmFileLength = 0;
   private boolean isPlaying = false;
-  private int playbackPositionBytes = 0;
+  private volatile long playbackPositionBytes = 0;
   private Thread playbackThread = null;
   private final Handler uiHandler = new Handler(Looper.getMainLooper());
   private Runnable playbackUpdater;
@@ -317,7 +317,7 @@ public class MainActivity extends AppCompatActivity {
     seekBar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
       @Override
       public void onProgressChanged(SeekBar sb, int progress, boolean fromUser) {
-        if (fromUser && pcmData != null) {
+        if (fromUser && playbackAudioPath != null) {
           seekToMs(progress);
         }
       }
@@ -479,8 +479,9 @@ public class MainActivity extends AppCompatActivity {
       SpectrogramView spectrogramView = findViewById(R.id.spectrogramView);
       record.startRecording();
       Process.setThreadPriority(Process.THREAD_PRIORITY_AUDIO);
+      short[] buffer = new short[miniBufferSize / 2];
+      byte[] pcmBytes = new byte[miniBufferSize]; // pre-allocate for PCM write
       while (startRecord) {
-        short[] buffer = new short[miniBufferSize / 2];
         int read = record.read(buffer, 0, buffer.length);
         if (read > 0) {
           if (useSpectrogram) {
@@ -493,15 +494,16 @@ public class MainActivity extends AppCompatActivity {
           // Save PCM to file
           if (pcmOutputStream != null) {
             try {
-              byte[] bytes = new byte[read * 2];
-              ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN).asShortBuffer().put(buffer, 0, read);
-              pcmOutputStream.write(bytes);
+              ByteBuffer.wrap(pcmBytes).order(ByteOrder.LITTLE_ENDIAN).asShortBuffer().put(buffer, 0, read);
+              pcmOutputStream.write(pcmBytes, 0, read * 2);
             } catch (IOException e) {
               Log.e(LOG_TAG, "Error writing PCM: " + e.getMessage());
             }
           }
           try {
-            bufferQueue.put(buffer);
+            short[] copy = new short[read];
+            System.arraycopy(buffer, 0, copy, 0, read);
+            bufferQueue.put(copy);
           } catch (InterruptedException e) {
             Log.e(LOG_TAG, e.getMessage());
           }
@@ -711,7 +713,6 @@ public class MainActivity extends AppCompatActivity {
   private void enterPlaybackMode(String recordingName) {
     currentPlaybackRecording = recordingName;
 
-    // Load PCM data
     String audioPath = RecordingManager.getAudioPath(this, recordingName);
     File audioFile = new File(audioPath);
     if (!audioFile.exists()) {
@@ -719,15 +720,8 @@ public class MainActivity extends AppCompatActivity {
       return;
     }
 
-    try {
-      FileInputStream fis = new FileInputStream(audioFile);
-      pcmData = new byte[(int) audioFile.length()];
-      pcmDataLength = fis.read(pcmData);
-      fis.close();
-    } catch (IOException e) {
-      Log.e(LOG_TAG, "Error reading PCM: " + e.getMessage());
-      return;
-    }
+    playbackAudioPath = audioPath;
+    pcmFileLength = audioFile.length();
 
     // Load word spans
     wordSpans = loadWordSpans(recordingName);
@@ -740,9 +734,7 @@ public class MainActivity extends AppCompatActivity {
     playbackLayout.setVisibility(View.VISIBLE);
 
     // Set up seekbar
-    int durationMs = pcmDataLength / (SAMPLE_RATE * 2) * 1000;
-    // more accurate: (pcmDataLength * 1000L) / (SAMPLE_RATE * 2)
-    durationMs = (int) ((long) pcmDataLength * 1000L / (SAMPLE_RATE * 2));
+    int durationMs = (int) (pcmFileLength * 1000L / (SAMPLE_RATE * 2));
     SeekBar seekBar = findViewById(R.id.seekBar);
     seekBar.setMax(durationMs);
     seekBar.setProgress(0);
@@ -786,7 +778,7 @@ public class MainActivity extends AppCompatActivity {
   }
 
   private void resumePlayback() {
-    if (pcmData == null) return;
+    if (playbackAudioPath == null) return;
 
     isPlaying = true;
     Button playPauseButton = findViewById(R.id.playPauseButton);
@@ -811,25 +803,42 @@ public class MainActivity extends AppCompatActivity {
 
     audioTrack.play();
 
-    // Start playback thread
+    // Start playback thread — streams from file
     playbackThread = new Thread(() -> {
-      int chunkSize = bufSize;
-      int pos = playbackPositionBytes;
-      while (isPlaying && pos < pcmDataLength) {
-        int remaining = pcmDataLength - pos;
-        int toWrite = Math.min(chunkSize, remaining);
-        int written = audioTrack.write(pcmData, pos, toWrite);
-        if (written > 0) {
-          pos += written;
-          if (isPlaying) {
-            playbackPositionBytes = pos;
+      FileInputStream fis = null;
+      try {
+        fis = new FileInputStream(playbackAudioPath);
+        long skipped = 0;
+        long toSkip = playbackPositionBytes;
+        while (skipped < toSkip) {
+          long s = fis.skip(toSkip - skipped);
+          if (s <= 0) break;
+          skipped += s;
+        }
+        byte[] chunk = new byte[bufSize];
+        long pos = playbackPositionBytes;
+        while (isPlaying && pos < pcmFileLength) {
+          int toRead = (int) Math.min(chunk.length, pcmFileLength - pos);
+          int bytesRead = fis.read(chunk, 0, toRead);
+          if (bytesRead <= 0) break;
+          int written = audioTrack.write(chunk, 0, bytesRead);
+          if (written > 0) {
+            pos += written;
+            if (isPlaying) {
+              playbackPositionBytes = pos;
+            }
+          } else {
+            break;
           }
-        } else {
-          break;
+        }
+      } catch (IOException e) {
+        Log.e(LOG_TAG, "Playback stream error: " + e.getMessage());
+      } finally {
+        if (fis != null) {
+          try { fis.close(); } catch (IOException ignored) {}
         }
       }
-      if (isPlaying && playbackPositionBytes >= pcmDataLength) {
-        // Playback finished
+      if (isPlaying && playbackPositionBytes >= pcmFileLength) {
         runOnUiThread(() -> {
           isPlaying = false;
           playbackPositionBytes = 0;
@@ -883,16 +892,15 @@ public class MainActivity extends AppCompatActivity {
       audioTrack = null;
     }
     playbackPositionBytes = 0;
-    pcmData = null;
+    playbackAudioPath = null;
+    pcmFileLength = 0;
   }
 
   private void seekToMs(int ms) {
-    // Convert ms to byte position (8kHz, 16-bit, mono = 2 bytes per sample)
-    int bytePos = (int) ((long) ms * SAMPLE_RATE * 2 / 1000);
-    // Align to 2-byte boundary
-    bytePos = bytePos & ~1;
+    long bytePos = (long) ms * SAMPLE_RATE * 2 / 1000;
+    bytePos = bytePos & ~1L;
     if (bytePos < 0) bytePos = 0;
-    if (pcmData != null && bytePos > pcmDataLength) bytePos = pcmDataLength;
+    if (bytePos > pcmFileLength) bytePos = pcmFileLength;
 
     boolean wasPlaying = isPlaying;
     if (wasPlaying) {
@@ -933,13 +941,13 @@ public class MainActivity extends AppCompatActivity {
   private void updatePlaybackUI(int currentMs) {
     SeekBar seekBar = findViewById(R.id.seekBar);
     TextView timeText = findViewById(R.id.timeTextView);
-    int durationMs = pcmData != null ? (int) ((long) pcmDataLength * 1000L / (SAMPLE_RATE * 2)) : 0;
+    int durationMs = (int) (pcmFileLength * 1000L / (SAMPLE_RATE * 2));
     seekBar.setProgress(currentMs);
     timeText.setText(formatTimeMs(currentMs) + "/" + formatTimeMs(durationMs));
   }
 
-  private int bytesToMs(int bytes) {
-    return (int) ((long) bytes * 1000L / (SAMPLE_RATE * 2));
+  private int bytesToMs(long bytes) {
+    return (int) (bytes * 1000L / (SAMPLE_RATE * 2));
   }
 
   private String formatTimeMs(int ms) {

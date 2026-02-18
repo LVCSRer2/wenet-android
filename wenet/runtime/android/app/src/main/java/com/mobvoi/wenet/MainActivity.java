@@ -101,6 +101,12 @@ public class MainActivity extends AppCompatActivity {
 
   // Recording save
   private String timestampedResult = null;
+
+  // Incremental display cache for buildLiveDisplay
+  private int cachedTimedTokenCount = 0;
+  private String cachedConfirmedText = "";
+  private StringBuilder cachedInProgressSentence = new StringBuilder();
+  private int cachedInProgressStartMs = -1;
   private String currentRecordingName = null;
   private FileOutputStream pcmOutputStream = null;
 
@@ -298,6 +304,10 @@ public class MainActivity extends AppCompatActivity {
           pcmOutputStream = null;
         }
         Recognize.reset();
+        cachedTimedTokenCount = 0;
+        cachedConfirmedText = "";
+        cachedInProgressSentence = new StringBuilder();
+        cachedInProgressStartMs = -1;
         startRecordThread();
         startAsrThread();
         Recognize.startDecode();
@@ -580,12 +590,18 @@ public class MainActivity extends AppCompatActivity {
   private void startAsrThread() {
     new Thread(() -> {
       // Send all data
+      long lastUiUpdate = 0;
+      final long UI_UPDATE_INTERVAL_MS = 300;
       while (startRecord || bufferQueue.size() > 0) {
         try {
           short[] data = bufferQueue.take();
           Recognize.acceptWaveform(data);
-          final String d = buildLiveDisplay();
-          runOnUiThread(() -> updateResultAndScroll(d));
+          long now = System.currentTimeMillis();
+          if (now - lastUiUpdate >= UI_UPDATE_INTERVAL_MS) {
+            lastUiUpdate = now;
+            final String d = buildLiveDisplay();
+            runOnUiThread(() -> updateResultAndScroll(d));
+          }
         } catch (InterruptedException e) {
           Log.e(LOG_TAG, e.getMessage());
         }
@@ -638,24 +654,65 @@ public class MainActivity extends AppCompatActivity {
     }
   }
 
-  /** Build live display: timestamped confirmed text + partial result on a new line. */
+  /** Build live display incrementally: only parse new tokens since last call. */
   private String buildLiveDisplay() {
-    String confirmed = buildTimestampedText(Recognize.getTimedResult());
-    String fullResult = Recognize.getResult();
-    // getResult() returns "확정문장 [00:00.0-00:03.5]\n확정문장2 [tag]\n현재partial"
-    // The last segment without a time tag is the partial result
-    String partial = "";
-    if (fullResult != null && !fullResult.isEmpty()) {
-      // Split by newline, check if the last line has a time tag [xx:xx.x-xx:xx.x]
-      String[] lines = fullResult.split("\n");
-      String lastLine = lines[lines.length - 1].trim();
-      if (!lastLine.isEmpty() && !lastLine.matches(".*\\[\\d{2}:\\d{2}\\.\\d+-\\d{2}:\\d{2}\\.\\d+\\]$")) {
-        partial = lastLine;
+    try {
+      String timedJson = Recognize.getTimedResult();
+      JSONArray arr = new JSONArray(timedJson);
+      int totalTokens = arr.length();
+
+      // Only process new tokens since last call
+      if (totalTokens > cachedTimedTokenCount) {
+        for (int i = cachedTimedTokenCount; i < totalTokens; i++) {
+          JSONObject obj = arr.getJSONObject(i);
+          String w = obj.getString("w");
+          int startMs = obj.getInt("s");
+          if (cachedInProgressStartMs == -1) cachedInProgressStartMs = startMs;
+          if ("\u2581".equals(w)) {
+            cachedInProgressSentence.append(" ");
+          } else {
+            cachedInProgressSentence.append(w);
+          }
+          if (".".equals(w) || "?".equals(w) || "!".equals(w)) {
+            String line = "[" + formatTimeMs(cachedInProgressStartMs) + "] "
+                + cachedInProgressSentence.toString().trim() + "\n";
+            cachedConfirmedText += line;
+            cachedInProgressSentence = new StringBuilder();
+            cachedInProgressStartMs = -1;
+          }
+        }
+        cachedTimedTokenCount = totalTokens;
       }
+
+      // Build confirmed part (cached + in-progress sentence)
+      String confirmed;
+      if (cachedInProgressSentence.length() > 0) {
+        confirmed = cachedConfirmedText
+            + "[" + formatTimeMs(cachedInProgressStartMs) + "] "
+            + cachedInProgressSentence.toString().trim();
+      } else {
+        confirmed = cachedConfirmedText.isEmpty() ? ""
+            : cachedConfirmedText.substring(0, cachedConfirmedText.length() - 1); // trim trailing \n
+      }
+
+      // Extract partial result
+      String fullResult = Recognize.getResult();
+      String partial = "";
+      if (fullResult != null && !fullResult.isEmpty()) {
+        String[] lines = fullResult.split("\n");
+        String lastLine = lines[lines.length - 1].trim();
+        if (!lastLine.isEmpty() && !lastLine.matches(".*\\[\\d{2}:\\d{2}\\.\\d+-\\d{2}:\\d{2}\\.\\d+\\]$")) {
+          partial = lastLine;
+        }
+      }
+
+      if (confirmed.isEmpty()) return partial;
+      if (partial.isEmpty()) return confirmed;
+      return confirmed + "\n" + partial;
+    } catch (Exception e) {
+      Log.e(LOG_TAG, "Error in buildLiveDisplay: " + e.getMessage());
+      return "";
     }
-    if (confirmed.isEmpty()) return partial;
-    if (partial.isEmpty()) return confirmed;
-    return confirmed + "\n" + partial;
   }
 
   private String buildTimestampedText(String timedJson) {

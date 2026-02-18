@@ -103,8 +103,9 @@ public class MainActivity extends AppCompatActivity {
   private String timestampedResult = null;
 
   // Incremental display cache for buildLiveDisplay
+  private int cachedTimedJsonLength = 0;
   private int cachedTimedTokenCount = 0;
-  private String cachedConfirmedText = "";
+  private StringBuilder cachedConfirmedText = new StringBuilder();
   private StringBuilder cachedInProgressSentence = new StringBuilder();
   private int cachedInProgressStartMs = -1;
   private String currentRecordingName = null;
@@ -304,8 +305,9 @@ public class MainActivity extends AppCompatActivity {
           pcmOutputStream = null;
         }
         Recognize.reset();
+        cachedTimedJsonLength = 0;
         cachedTimedTokenCount = 0;
-        cachedConfirmedText = "";
+        cachedConfirmedText = new StringBuilder();
         cachedInProgressSentence = new StringBuilder();
         cachedInProgressStartMs = -1;
         startRecordThread();
@@ -590,18 +592,12 @@ public class MainActivity extends AppCompatActivity {
   private void startAsrThread() {
     new Thread(() -> {
       // Send all data
-      long lastUiUpdate = 0;
-      final long UI_UPDATE_INTERVAL_MS = 300;
       while (startRecord || bufferQueue.size() > 0) {
         try {
           short[] data = bufferQueue.take();
           Recognize.acceptWaveform(data);
-          long now = System.currentTimeMillis();
-          if (now - lastUiUpdate >= UI_UPDATE_INTERVAL_MS) {
-            lastUiUpdate = now;
-            final String d = buildLiveDisplay();
-            runOnUiThread(() -> updateResultAndScroll(d));
-          }
+          final String d = buildLiveDisplay();
+          runOnUiThread(() -> updateResultAndScroll(d));
         } catch (InterruptedException e) {
           Log.e(LOG_TAG, e.getMessage());
         }
@@ -654,54 +650,60 @@ public class MainActivity extends AppCompatActivity {
     }
   }
 
-  /** Build live display incrementally: only parse new tokens since last call. */
+  /** Build live display incrementally: skip JSON parse if timed result unchanged. */
   private String buildLiveDisplay() {
     try {
       String timedJson = Recognize.getTimedResult();
-      JSONArray arr = new JSONArray(timedJson);
-      int totalTokens = arr.length();
+      int jsonLen = (timedJson != null) ? timedJson.length() : 0;
 
-      // Only process new tokens since last call
-      if (totalTokens > cachedTimedTokenCount) {
-        for (int i = cachedTimedTokenCount; i < totalTokens; i++) {
-          JSONObject obj = arr.getJSONObject(i);
-          String w = obj.getString("w");
-          int startMs = obj.getInt("s");
-          if (cachedInProgressStartMs == -1) cachedInProgressStartMs = startMs;
-          if ("\u2581".equals(w)) {
-            cachedInProgressSentence.append(" ");
-          } else {
-            cachedInProgressSentence.append(w);
+      // Only re-parse if timed result JSON has actually changed
+      if (jsonLen != cachedTimedJsonLength) {
+        cachedTimedJsonLength = jsonLen;
+        JSONArray arr = new JSONArray(timedJson);
+        int totalTokens = arr.length();
+        if (totalTokens > cachedTimedTokenCount) {
+          for (int i = cachedTimedTokenCount; i < totalTokens; i++) {
+            JSONObject obj = arr.getJSONObject(i);
+            String w = obj.getString("w");
+            int startMs = obj.getInt("s");
+            if (cachedInProgressStartMs == -1) cachedInProgressStartMs = startMs;
+            if ("\u2581".equals(w)) {
+              cachedInProgressSentence.append(" ");
+            } else {
+              cachedInProgressSentence.append(w);
+            }
+            if (".".equals(w) || "?".equals(w) || "!".equals(w)) {
+              cachedConfirmedText.append("[").append(formatTimeMs(cachedInProgressStartMs)).append("] ")
+                  .append(cachedInProgressSentence.toString().trim()).append("\n");
+              cachedInProgressSentence = new StringBuilder();
+              cachedInProgressStartMs = -1;
+            }
           }
-          if (".".equals(w) || "?".equals(w) || "!".equals(w)) {
-            String line = "[" + formatTimeMs(cachedInProgressStartMs) + "] "
-                + cachedInProgressSentence.toString().trim() + "\n";
-            cachedConfirmedText += line;
-            cachedInProgressSentence = new StringBuilder();
-            cachedInProgressStartMs = -1;
-          }
+          cachedTimedTokenCount = totalTokens;
         }
-        cachedTimedTokenCount = totalTokens;
       }
 
-      // Build confirmed part (cached + in-progress sentence)
+      // Build display string
       String confirmed;
       if (cachedInProgressSentence.length() > 0) {
-        confirmed = cachedConfirmedText
+        confirmed = cachedConfirmedText.toString()
             + "[" + formatTimeMs(cachedInProgressStartMs) + "] "
             + cachedInProgressSentence.toString().trim();
+      } else if (cachedConfirmedText.length() > 0) {
+        confirmed = cachedConfirmedText.substring(0, cachedConfirmedText.length() - 1);
       } else {
-        confirmed = cachedConfirmedText.isEmpty() ? ""
-            : cachedConfirmedText.substring(0, cachedConfirmedText.length() - 1); // trim trailing \n
+        confirmed = "";
       }
 
-      // Extract partial result
+      // Extract partial: last line of getResult() without time tag
       String fullResult = Recognize.getResult();
       String partial = "";
       if (fullResult != null && !fullResult.isEmpty()) {
-        String[] lines = fullResult.split("\n");
-        String lastLine = lines[lines.length - 1].trim();
-        if (!lastLine.isEmpty() && !lastLine.matches(".*\\[\\d{2}:\\d{2}\\.\\d+-\\d{2}:\\d{2}\\.\\d+\\]$")) {
+        int lastNewline = fullResult.lastIndexOf('\n');
+        String lastLine = (lastNewline >= 0)
+            ? fullResult.substring(lastNewline + 1).trim()
+            : fullResult.trim();
+        if (!lastLine.isEmpty() && lastLine.indexOf('[') == -1) {
           partial = lastLine;
         }
       }

@@ -550,7 +550,7 @@ public class MainActivity extends AppCompatActivity {
       energy += value * value;
     }
     energy /= buffer.length;
-    energy = (10 * Math.log10(1 + energy)) / 100;
+    energy = (10 * Math.log10(1 + energy)) / 200;
     energy = Math.min(energy, 1.0);
     return energy;
   }

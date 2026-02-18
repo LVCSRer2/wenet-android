@@ -39,6 +39,8 @@ std::shared_ptr<DecodeResource> resource;
 DecodeState state = kEndBatch;
 std::string total_result;  // NOLINT
 std::string timed_result_json;  // JSON array of {w, s, e}
+size_t timed_result_sent_pos = 0;  // position already sent to Java
+std::string total_result_sent;  // total_result already sent to Java
 int total_samples = 0;
 int endpoint_start_sample = 0;
 const int kSampleRate = 8000;
@@ -109,6 +111,8 @@ void reset(JNIEnv* env, jobject) {
   state = kEndBatch;
   total_result = "";
   timed_result_json = "";
+  timed_result_sent_pos = 0;
+  total_result_sent = "";
   total_samples = 0;
   endpoint_start_sample = 0;
 }
@@ -218,9 +222,45 @@ jstring get_result(JNIEnv* env, jobject) {
   return env->NewStringUTF((total_result + result).c_str());
 }
 
+// Returns only NEW timed tokens since last call (as JSON array).
+// Returns "[]" if nothing new.
+jstring get_timed_result_delta(JNIEnv* env, jobject) {
+  size_t cur_len = timed_result_json.size();
+  if (cur_len == timed_result_sent_pos) {
+    return env->NewStringUTF("[]");
+  }
+  std::string delta = timed_result_json.substr(timed_result_sent_pos);
+  timed_result_sent_pos = cur_len;
+  // delta may start with "," if not the first chunk
+  if (!delta.empty() && delta[0] == ',') {
+    delta = delta.substr(1);
+  }
+  std::string json = "[" + delta + "]";
+  return env->NewStringUTF(json.c_str());
+}
+
+// Returns full timed result (for final save)
 jstring get_timed_result(JNIEnv* env, jobject) {
   std::string json = "[" + timed_result_json + "]";
   return env->NewStringUTF(json.c_str());
+}
+
+// Returns only the NEW confirmed text since last call + current partial.
+jstring get_result_delta(JNIEnv* env, jobject) {
+  // New confirmed portion
+  std::string new_confirmed;
+  if (total_result.size() > total_result_sent.size()) {
+    new_confirmed = total_result.substr(total_result_sent.size());
+    total_result_sent = total_result;
+  }
+  // Current partial
+  std::string partial;
+  if (decoder->DecodedSomething()) {
+    partial = decoder->result()[0].sentence;
+  }
+  // Format: "NEW_CONFIRMED\nPARTIAL" (newline separator)
+  std::string result = new_confirmed + "\n" + partial;
+  return env->NewStringUTF(result.c_str());
 }
 }  // namespace wenet
 
@@ -248,6 +288,10 @@ JNIEXPORT jint JNI_OnLoad(JavaVM* vm, void*) {
        reinterpret_cast<void*>(wenet::get_result)},
       {"getTimedResult", "()Ljava/lang/String;",
        reinterpret_cast<void*>(wenet::get_timed_result)},
+      {"getTimedResultDelta", "()Ljava/lang/String;",
+       reinterpret_cast<void*>(wenet::get_timed_result_delta)},
+      {"getResultDelta", "()Ljava/lang/String;",
+       reinterpret_cast<void*>(wenet::get_result_delta)},
   };
   int rc = env->RegisterNatives(c, methods,
                                 sizeof(methods) / sizeof(JNINativeMethod));

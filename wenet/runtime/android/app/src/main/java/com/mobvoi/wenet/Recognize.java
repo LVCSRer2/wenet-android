@@ -14,4 +14,6 @@ public class Recognize {
   public static native void startDecode();
   public static native String getResult();
   public static native String getTimedResult();
+  public static native String getTimedResultDelta();
+  public static native String getResultDelta();
 }

@@ -206,20 +206,21 @@ public class MainActivity extends AppCompatActivity {
     updateVisualizationVisibility();
 
     // dB range sliders for spectrogram
-    // Floor SeekBar: 0..60 → dB -20..40, Ceil SeekBar: 0..60 → dB 40..100
+    // Both SeekBars: 0..140 → dB -40..100, Floor <= Ceil enforced
+    final int DB_OFFSET = -40;
     SeekBar dbFloorSeekBar = findViewById(R.id.dbFloorSeekBar);
     SeekBar dbCeilSeekBar = findViewById(R.id.dbCeilSeekBar);
     TextView dbRangeLabel = findViewById(R.id.dbRangeLabel);
     SpectrogramView spectrogramView = findViewById(R.id.spectrogramView);
 
     int savedFloorProgress = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
-        .getInt("db_floor_progress", 10);
+        .getInt("db_floor_progress", 20);
     int savedCeilProgress = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
-        .getInt("db_ceil_progress", 40);
+        .getInt("db_ceil_progress", 120);
     dbFloorSeekBar.setProgress(savedFloorProgress);
     dbCeilSeekBar.setProgress(savedCeilProgress);
-    double initFloor = savedFloorProgress - 20.0;
-    double initCeil = savedCeilProgress + 40.0;
+    double initFloor = savedFloorProgress + DB_OFFSET;
+    double initCeil = savedCeilProgress + DB_OFFSET;
     spectrogramView.setDbFloor(initFloor);
     spectrogramView.setDbCeil(initCeil);
     dbRangeLabel.setText(String.format("dB: %.0f ~ %.0f", initFloor, initCeil));
@@ -227,8 +228,13 @@ public class MainActivity extends AppCompatActivity {
     dbFloorSeekBar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
       @Override
       public void onProgressChanged(SeekBar sb, int progress, boolean fromUser) {
-        double floor = progress - 20.0;
-        double ceil = ((SeekBar) findViewById(R.id.dbCeilSeekBar)).getProgress() + 40.0;
+        SeekBar ceilBar = findViewById(R.id.dbCeilSeekBar);
+        if (fromUser && progress >= ceilBar.getProgress()) {
+          sb.setProgress(ceilBar.getProgress() - 1);
+          return;
+        }
+        double floor = progress + DB_OFFSET;
+        double ceil = ceilBar.getProgress() + DB_OFFSET;
         ((SpectrogramView) findViewById(R.id.spectrogramView)).setDbFloor(floor);
         ((TextView) findViewById(R.id.dbRangeLabel))
             .setText(String.format("dB: %.0f ~ %.0f", floor, ceil));
@@ -245,8 +251,13 @@ public class MainActivity extends AppCompatActivity {
     dbCeilSeekBar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
       @Override
       public void onProgressChanged(SeekBar sb, int progress, boolean fromUser) {
-        double ceil = progress + 40.0;
-        double floor = ((SeekBar) findViewById(R.id.dbFloorSeekBar)).getProgress() - 20.0;
+        SeekBar floorBar = findViewById(R.id.dbFloorSeekBar);
+        if (fromUser && progress <= floorBar.getProgress()) {
+          sb.setProgress(floorBar.getProgress() + 1);
+          return;
+        }
+        double ceil = progress + DB_OFFSET;
+        double floor = floorBar.getProgress() + DB_OFFSET;
         ((SpectrogramView) findViewById(R.id.spectrogramView)).setDbCeil(ceil);
         ((TextView) findViewById(R.id.dbRangeLabel))
             .setText(String.format("dB: %.0f ~ %.0f", floor, ceil));

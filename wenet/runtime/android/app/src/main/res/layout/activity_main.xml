@@ -100,8 +100,8 @@
             android:layout_height="wrap_content"
             android:layout_weight="1"
             android:layout_marginStart="4dp"
-            android:max="60"
-            android:progress="10" />
+            android:max="140"
+            android:progress="20" />
 
         </LinearLayout>
 
@@ -124,8 +124,8 @@
             android:layout_height="wrap_content"
             android:layout_weight="1"
             android:layout_marginStart="4dp"
-            android:max="60"
-            android:progress="60" />
+            android:max="140"
+            android:progress="120" />
 
         </LinearLayout>
 

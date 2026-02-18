@@ -17,7 +17,7 @@ public class SpectrogramView extends View {
     private static final int MAX_COLUMNS = 200;
 
     private final Paint bitmapPaint = new Paint(Paint.FILTER_BITMAP_FLAG);
-    private volatile double dbFloor = -10.0;
+    private volatile double dbFloor = -20.0;
     private volatile double dbCeil = 80.0;
 
     // Offscreen bitmap: MAX_COLUMNS x FREQ_BINS, updated from recording thread

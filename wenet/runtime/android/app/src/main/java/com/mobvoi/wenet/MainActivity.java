@@ -291,7 +291,7 @@ public class MainActivity extends AppCompatActivity {
       }
     });
 
-    button.setText("Start Record");
+    button.setText("Record");
     button.setOnClickListener(view -> {
       if (!startRecord) {
         stopPlayback();
@@ -315,11 +315,11 @@ public class MainActivity extends AppCompatActivity {
         Intent serviceIntent = new Intent(this, RecordingForegroundService.class);
         serviceIntent.setAction(RecordingForegroundService.ACTION_START);
         ContextCompat.startForegroundService(this, serviceIntent);
-        button.setText("Stop Record");
+        button.setText("Stop");
       } else {
         startRecord = false;
         Recognize.setInputFinished();
-        button.setText("Start Record");
+        button.setText("Record");
       }
       button.setEnabled(false);
     });
@@ -680,6 +680,20 @@ public class MainActivity extends AppCompatActivity {
           } catch (Exception e) {
             timestampedResult = Recognize.getResult();
           }
+          // Fallback: use cached display text if timestamped result is empty
+          if (timestampedResult == null || timestampedResult.trim().isEmpty()) {
+            String fallback = cachedConfirmedText.toString();
+            if (cachedInProgressSentence.length() > 0) {
+              if (cachedInProgressStartMs >= 0) {
+                fallback += "[" + formatTimeMs(cachedInProgressStartMs) + "] "
+                    + cachedInProgressSentence.toString().trim() + "\n";
+              } else {
+                fallback += cachedInProgressSentence.toString().trim() + "\n";
+              }
+            }
+            timestampedResult = fallback.trim();
+            Log.i(LOG_TAG, "Using fallback for timestampedResult");
+          }
           SlackWebhookSender.send(
               getApplicationContext(), currentRecordingName, timestampedResult);
           stopService(new Intent(MainActivity.this, RecordingForegroundService.class));
@@ -702,6 +716,32 @@ public class MainActivity extends AppCompatActivity {
     try {
       String timedJson = Recognize.getTimedResult();
       Log.i(LOG_TAG, "Timed result: " + timedJson);
+
+      // Fallback: if native timed result is empty but we have cached text,
+      // save a simple JSON array with the cached text as a single entry
+      if ((timedJson == null || "[]".equals(timedJson.trim()))
+          && (cachedConfirmedText.length() > 0 || cachedInProgressSentence.length() > 0)) {
+        String fallbackText = cachedConfirmedText.toString();
+        if (cachedInProgressSentence.length() > 0) {
+          fallbackText += cachedInProgressSentence.toString();
+        }
+        fallbackText = fallbackText.trim();
+        if (!fallbackText.isEmpty()) {
+          // Build a minimal JSON array with word-per-character (no timestamps)
+          StringBuilder sb = new StringBuilder("[");
+          for (int i = 0; i < fallbackText.length(); i++) {
+            if (i > 0) sb.append(",");
+            String ch = fallbackText.substring(i, i + 1);
+            if ("\"".equals(ch)) ch = "\\\"";
+            if ("\\".equals(ch)) ch = "\\\\";
+            sb.append("{\"w\":\"").append(ch).append("\",\"s\":0,\"e\":0}");
+          }
+          sb.append("]");
+          timedJson = sb.toString();
+          Log.i(LOG_TAG, "Using fallback text for timed result");
+        }
+      }
+
       String resultPath = RecordingManager.getResultPath(this, currentRecordingName);
       FileOutputStream fos = new FileOutputStream(resultPath);
       fos.write(timedJson.getBytes("UTF-8"));

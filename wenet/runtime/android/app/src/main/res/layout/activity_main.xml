@@ -7,31 +7,50 @@
     android:layout_height="match_parent"
     tools:context=".MainActivity">
 
-    <ScrollView
-      android:id="@+id/scrollView"
+    <FrameLayout
+      android:id="@+id/textContainer"
       android:layout_width="0dp"
       android:layout_height="0dp"
-      android:background="#F4F4F4"
-      android:fadingEdge="vertical"
       app:layout_constraintBottom_toTopOf="@+id/visualizationContainer"
       app:layout_constraintEnd_toEndOf="parent"
       app:layout_constraintStart_toStartOf="parent"
       app:layout_constraintTop_toTopOf="parent"
-      app:layout_constraintVertical_bias="0.0"
       android:layout_marginTop="16dp"
       android:layout_marginStart="8dp"
       android:layout_marginEnd="8dp">
 
-      <TextView
-        android:id="@+id/textView"
+      <ScrollView
+        android:id="@+id/scrollView"
         android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:padding="8dp"
-        android:text=""
-        android:textSize="20sp"
-        android:linksClickable="true" />
+        android:layout_height="match_parent"
+        android:background="#F4F4F4"
+        android:fadingEdge="vertical">
 
-    </ScrollView>
+        <TextView
+          android:id="@+id/textView"
+          android:layout_width="match_parent"
+          android:layout_height="wrap_content"
+          android:padding="8dp"
+          android:text=""
+          android:textSize="20sp"
+          android:linksClickable="true" />
+
+      </ScrollView>
+
+      <Button
+        android:id="@+id/copyButton"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="bottom|end"
+        android:layout_margin="8dp"
+        android:textSize="9sp"
+        android:minWidth="0dp"
+        android:minHeight="0dp"
+        android:padding="6dp"
+        android:text="Copy"
+        android:alpha="0.7" />
+
+    </FrameLayout>
 
     <FrameLayout
       android:id="@+id/visualizationContainer"
@@ -150,9 +169,11 @@
         android:id="@+id/playPauseButton"
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
-        android:textSize="12sp"
+        android:textSize="10sp"
         android:text="Play"
-        android:minWidth="80dp" />
+        android:minWidth="64dp"
+        android:minHeight="0dp"
+        android:padding="6dp" />
 
       <SeekBar
         android:id="@+id/seekBar"
@@ -175,7 +196,11 @@
       android:id="@+id/button"
       android:layout_width="0dp"
       android:layout_height="wrap_content"
-      android:textSize="12sp"
+      android:textSize="10sp"
+      android:minHeight="0dp"
+      android:padding="12dp"
+      android:layout_marginStart="4dp"
+      android:layout_marginEnd="3dp"
       android:text="Button"
       app:layout_constraintBottom_toBottomOf="parent"
       app:layout_constraintStart_toStartOf="parent"
@@ -186,30 +211,28 @@
       android:id="@+id/recordingsButton"
       android:layout_width="0dp"
       android:layout_height="wrap_content"
-      android:textSize="12sp"
+      android:textSize="10sp"
+      android:minHeight="0dp"
+      android:padding="12dp"
+      android:layout_marginStart="3dp"
+      android:layout_marginEnd="3dp"
       android:text="Recordings"
       app:layout_constraintBottom_toBottomOf="parent"
       app:layout_constraintStart_toEndOf="@+id/button"
-      app:layout_constraintEnd_toStartOf="@+id/copyButton" />
-
-    <Button
-      android:id="@+id/copyButton"
-      android:layout_width="0dp"
-      android:layout_height="wrap_content"
-      android:textSize="12sp"
-      android:text="Copy"
-      app:layout_constraintBottom_toBottomOf="parent"
-      app:layout_constraintStart_toEndOf="@+id/recordingsButton"
       app:layout_constraintEnd_toStartOf="@+id/settingsButton" />
 
     <Button
       android:id="@+id/settingsButton"
       android:layout_width="0dp"
       android:layout_height="wrap_content"
-      android:textSize="12sp"
+      android:textSize="10sp"
+      android:minHeight="0dp"
+      android:padding="12dp"
+      android:layout_marginStart="3dp"
+      android:layout_marginEnd="4dp"
       android:text="Settings"
       app:layout_constraintBottom_toBottomOf="parent"
-      app:layout_constraintStart_toEndOf="@+id/copyButton"
+      app:layout_constraintStart_toEndOf="@+id/recordingsButton"
       app:layout_constraintEnd_toEndOf="parent" />
 
 </androidx.constraintlayout.widget.ConstraintLayout>

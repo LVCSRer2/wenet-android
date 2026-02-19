@@ -16,7 +16,7 @@
         tools:replace="android:theme"
         android:theme="@style/Theme.Wenet">
         <activity android:name=".MainActivity"
-            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize">
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|uiMode|navigation|keyboard|keyboardHidden">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
 

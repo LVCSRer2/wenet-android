@@ -435,10 +435,19 @@ public class MainActivity extends AppCompatActivity {
   }
 
   private void requestAudioPermissions() {
+    List<String> perms = new ArrayList<>();
     if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO)
         != PackageManager.PERMISSION_GRANTED) {
+      perms.add(Manifest.permission.RECORD_AUDIO);
+    }
+    if (Build.VERSION.SDK_INT >= 31
+        && ContextCompat.checkSelfPermission(this, "android.permission.BLUETOOTH_CONNECT")
+            != PackageManager.PERMISSION_GRANTED) {
+      perms.add("android.permission.BLUETOOTH_CONNECT");
+    }
+    if (!perms.isEmpty()) {
       ActivityCompat.requestPermissions(this,
-          new String[]{Manifest.permission.RECORD_AUDIO},
+          perms.toArray(new String[0]),
           MY_PERMISSIONS_RECORD_AUDIO);
     } else {
       initRecorder();
@@ -447,6 +456,14 @@ public class MainActivity extends AppCompatActivity {
 
   private void startBluetoothMic() {
     try {
+      // Check mic device setting
+      String micDevice = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
+          .getString("mic_device", "bluetooth");
+      if ("phone".equals(micDevice)) {
+        Log.i(LOG_TAG, "Mic device set to phone, skipping Bluetooth");
+        return;
+      }
+
       // Android 12 (API 31)+ requires BLUETOOTH_CONNECT runtime permission
       if (Build.VERSION.SDK_INT >= 31
           && ContextCompat.checkSelfPermission(this, "android.permission.BLUETOOTH_CONNECT")
@@ -454,10 +471,37 @@ public class MainActivity extends AppCompatActivity {
         Log.i(LOG_TAG, "BLUETOOTH_CONNECT permission not granted, using phone mic");
         return;
       }
+
+      // Android 12+ (API 31): use setCommunicationDevice API
+      if (Build.VERSION.SDK_INT >= 31) {
+        List<android.media.AudioDeviceInfo> devices = audioManager.getAvailableCommunicationDevices();
+        for (android.media.AudioDeviceInfo device : devices) {
+          Log.i(LOG_TAG, "Available comm device: type=" + device.getType()
+              + " name=" + device.getProductName());
+          if (device.getType() == android.media.AudioDeviceInfo.TYPE_BLUETOOTH_SCO) {
+            boolean result = audioManager.setCommunicationDevice(device);
+            Log.i(LOG_TAG, "setCommunicationDevice(BT_SCO) = " + result
+                + " name=" + device.getProductName());
+            if (result) {
+              bluetoothScoOn = true;
+              return;
+            }
+          }
+        }
+        Log.i(LOG_TAG, "No BT SCO device found in available communication devices");
+        return;
+      }
+
+      // Legacy path for Android < 12
+      if (!audioManager.isBluetoothScoAvailableOffCall()) {
+        Log.i(LOG_TAG, "Bluetooth SCO not available off call, using phone mic");
+        return;
+      }
+      audioManager.setMode(AudioManager.MODE_IN_COMMUNICATION);
       audioManager.startBluetoothSco();
       audioManager.setBluetoothScoOn(true);
       bluetoothScoOn = true;
-      Log.i(LOG_TAG, "Bluetooth SCO requested");
+      Log.i(LOG_TAG, "Bluetooth SCO requested (legacy)");
     } catch (Exception e) {
       Log.i(LOG_TAG, "Bluetooth SCO not available: " + e.getMessage());
       bluetoothScoOn = false;
@@ -467,11 +511,17 @@ public class MainActivity extends AppCompatActivity {
   private void stopBluetoothMic() {
     if (bluetoothScoOn) {
       try {
-        audioManager.setBluetoothScoOn(false);
-        audioManager.stopBluetoothSco();
+        if (Build.VERSION.SDK_INT >= 31) {
+          audioManager.clearCommunicationDevice();
+          Log.i(LOG_TAG, "clearCommunicationDevice called");
+        } else {
+          audioManager.setBluetoothScoOn(false);
+          audioManager.stopBluetoothSco();
+          audioManager.setMode(AudioManager.MODE_NORMAL);
+          Log.i(LOG_TAG, "Bluetooth SCO stopped (legacy)");
+        }
       } catch (Exception ignored) {}
       bluetoothScoOn = false;
-      Log.i(LOG_TAG, "Bluetooth SCO stopped");
     }
   }
 
@@ -483,7 +533,7 @@ public class MainActivity extends AppCompatActivity {
       Log.e(LOG_TAG, "Audio buffer can't initialize!");
       return;
     }
-    record = new AudioRecord(MediaRecorder.AudioSource.DEFAULT,
+    record = new AudioRecord(MediaRecorder.AudioSource.VOICE_COMMUNICATION,
         SAMPLE_RATE,
         AudioFormat.CHANNEL_IN_MONO,
         AudioFormat.ENCODING_PCM_16BIT,
@@ -873,6 +923,41 @@ public class MainActivity extends AppCompatActivity {
         .setBufferSizeInBytes(bufSize)
         .setTransferMode(AudioTrack.MODE_STREAM)
         .build();
+
+    // Route playback to Bluetooth if setting is "bluetooth"
+    String playDevice = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
+        .getString("play_device", "phone");
+    if ("bluetooth".equals(playDevice)) {
+      android.media.AudioDeviceInfo[] outputDevices =
+          audioManager.getDevices(AudioManager.GET_DEVICES_OUTPUTS);
+      android.media.AudioDeviceInfo btDevice = null;
+      for (android.media.AudioDeviceInfo device : outputDevices) {
+        Log.i(LOG_TAG, "Output device: type=" + device.getType()
+            + " name=" + device.getProductName());
+        if (device.getType() == android.media.AudioDeviceInfo.TYPE_BLUETOOTH_A2DP
+            || device.getType() == android.media.AudioDeviceInfo.TYPE_BLUETOOTH_SCO) {
+          btDevice = device;
+        }
+      }
+      if (btDevice != null) {
+        audioTrack.setPreferredDevice(btDevice);
+        Log.i(LOG_TAG, "Playback routed to BT: type=" + btDevice.getType()
+            + " name=" + btDevice.getProductName());
+      } else {
+        Log.i(LOG_TAG, "No Bluetooth output device found, using phone speaker");
+      }
+    } else {
+      // Force playback to phone speaker (bypass BT A2DP default routing)
+      android.media.AudioDeviceInfo[] outputDevices =
+          audioManager.getDevices(AudioManager.GET_DEVICES_OUTPUTS);
+      for (android.media.AudioDeviceInfo device : outputDevices) {
+        if (device.getType() == android.media.AudioDeviceInfo.TYPE_BUILTIN_SPEAKER) {
+          audioTrack.setPreferredDevice(device);
+          Log.i(LOG_TAG, "Playback forced to phone speaker");
+          break;
+        }
+      }
+    }
 
     audioTrack.play();
 

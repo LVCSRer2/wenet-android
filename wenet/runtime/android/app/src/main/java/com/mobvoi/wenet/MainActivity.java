@@ -109,6 +109,8 @@ public class MainActivity extends AppCompatActivity {
   private StringBuilder cachedConfirmedText = new StringBuilder();
   private StringBuilder cachedInProgressSentence = new StringBuilder();
   private int cachedInProgressStartMs = -1;
+  private String lastPartialText = "";
+  private String lastDisplayedText = "";
   private String currentRecordingName = null;
   private FileOutputStream pcmOutputStream = null;
 
@@ -309,6 +311,8 @@ public class MainActivity extends AppCompatActivity {
         cachedConfirmedText = new StringBuilder();
         cachedInProgressSentence = new StringBuilder();
         cachedInProgressStartMs = -1;
+        lastPartialText = "";
+        lastDisplayedText = "";
         startRecordThread();
         startAsrThread();
         Recognize.startDecode();
@@ -680,19 +684,11 @@ public class MainActivity extends AppCompatActivity {
           } catch (Exception e) {
             timestampedResult = Recognize.getResult();
           }
-          // Fallback: use cached display text if timestamped result is empty
-          if (timestampedResult == null || timestampedResult.trim().isEmpty()) {
-            String fallback = cachedConfirmedText.toString();
-            if (cachedInProgressSentence.length() > 0) {
-              if (cachedInProgressStartMs >= 0) {
-                fallback += "[" + formatTimeMs(cachedInProgressStartMs) + "] "
-                    + cachedInProgressSentence.toString().trim() + "\n";
-              } else {
-                fallback += cachedInProgressSentence.toString().trim() + "\n";
-              }
-            }
-            timestampedResult = fallback.trim();
-            Log.i(LOG_TAG, "Using fallback for timestampedResult");
+          // Fallback: use last displayed text if native result is empty
+          if ((timestampedResult == null || timestampedResult.trim().isEmpty())
+              && !lastDisplayedText.isEmpty()) {
+            timestampedResult = lastDisplayedText.trim();
+            Log.i(LOG_TAG, "Using lastDisplayedText as timestampedResult fallback");
           }
           SlackWebhookSender.send(
               getApplicationContext(), currentRecordingName, timestampedResult);
@@ -716,31 +712,6 @@ public class MainActivity extends AppCompatActivity {
     try {
       String timedJson = Recognize.getTimedResult();
       Log.i(LOG_TAG, "Timed result: " + timedJson);
-
-      // Fallback: if native timed result is empty but we have cached text,
-      // save a simple JSON array with the cached text as a single entry
-      if ((timedJson == null || "[]".equals(timedJson.trim()))
-          && (cachedConfirmedText.length() > 0 || cachedInProgressSentence.length() > 0)) {
-        String fallbackText = cachedConfirmedText.toString();
-        if (cachedInProgressSentence.length() > 0) {
-          fallbackText += cachedInProgressSentence.toString();
-        }
-        fallbackText = fallbackText.trim();
-        if (!fallbackText.isEmpty()) {
-          // Build a minimal JSON array with word-per-character (no timestamps)
-          StringBuilder sb = new StringBuilder("[");
-          for (int i = 0; i < fallbackText.length(); i++) {
-            if (i > 0) sb.append(",");
-            String ch = fallbackText.substring(i, i + 1);
-            if ("\"".equals(ch)) ch = "\\\"";
-            if ("\\".equals(ch)) ch = "\\\\";
-            sb.append("{\"w\":\"").append(ch).append("\",\"s\":0,\"e\":0}");
-          }
-          sb.append("]");
-          timedJson = sb.toString();
-          Log.i(LOG_TAG, "Using fallback text for timed result");
-        }
-      }
 
       String resultPath = RecordingManager.getResultPath(this, currentRecordingName);
       FileOutputStream fos = new FileOutputStream(resultPath);
@@ -800,10 +771,14 @@ public class MainActivity extends AppCompatActivity {
           partial = deltaResult.substring(sep + 1).trim();
         }
       }
+      lastPartialText = partial;
 
-      if (confirmed.isEmpty()) return partial;
-      if (partial.isEmpty()) return confirmed;
-      return confirmed + "\n" + partial;
+      String display;
+      if (confirmed.isEmpty()) display = partial;
+      else if (partial.isEmpty()) display = confirmed;
+      else display = confirmed + "\n" + partial;
+      lastDisplayedText = display;
+      return display;
     } catch (Exception e) {
       Log.e(LOG_TAG, "Error in buildLiveDisplay: " + e.getMessage());
       return "";

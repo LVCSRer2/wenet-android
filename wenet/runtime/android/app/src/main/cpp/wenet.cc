@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 #include <jni.h>
+#include <atomic>
 #include <cstdio>
 #include <thread>
 
@@ -37,6 +38,7 @@ std::shared_ptr<FeaturePipeline> feature_pipeline;
 std::shared_ptr<AsrDecoder> decoder;
 std::shared_ptr<DecodeResource> resource;
 DecodeState state = kEndBatch;
+std::atomic<bool> decode_thread_done{false};  // set after ALL kEndFeats processing
 std::string total_result;  // NOLINT
 std::string timed_result_json;  // JSON array of {w, s, e}
 size_t timed_result_sent_pos = 0;  // position already sent to Java
@@ -109,6 +111,7 @@ void reset(JNIEnv* env, jobject) {
   LOG(INFO) << "wenet reset";
   decoder->Reset();
   state = kEndBatch;
+  decode_thread_done = false;
   total_result = "";
   timed_result_json = "";
   timed_result_sent_pos = 0;
@@ -162,6 +165,9 @@ void AppendWordPiecesToJson(const std::vector<WordPiece>& pieces) {
 }
 
 void decode_thread_func() {
+  // Cache last partial word_pieces so we can save them at kEndFeats
+  std::vector<WordPiece> last_partial_pieces;
+
   while (true) {
     state = decoder->Decode();
     if (state == kEndFeats || state == kEndpoint) {
@@ -180,7 +186,14 @@ void decode_thread_func() {
       total_result += result + tag;
       if (decoder->DecodedSomething()) {
         AppendWordPiecesToJson(decoder->result()[0].word_pieces);
+      } else if (!last_partial_pieces.empty()) {
+        // Use cached partial word_pieces when final decode has nothing
+        LOG(INFO) << "wenet endfeats: using cached partial word_pieces ("
+                  << last_partial_pieces.size() << " pieces)";
+        AppendWordPiecesToJson(last_partial_pieces);
       }
+      LOG(INFO) << "wenet decode_thread_done = true";
+      decode_thread_done = true;
       break;
     } else if (state == kEndpoint) {
       LOG(INFO) << "wenet endpoint final result: " << result;
@@ -190,11 +203,14 @@ void decode_thread_func() {
       if (decoder->DecodedSomething()) {
         AppendWordPiecesToJson(decoder->result()[0].word_pieces);
       }
+      last_partial_pieces.clear();
       endpoint_start_sample = total_samples;
       decoder->ResetContinuousDecoding();
     } else {
       if (decoder->DecodedSomething()) {
         LOG(INFO) << "wenet partial result: " << result;
+        // Cache partial word_pieces for potential use at kEndFeats
+        last_partial_pieces = decoder->result()[0].word_pieces;
       }
     }
   }
@@ -206,8 +222,8 @@ void start_decode() {
 }
 
 jboolean get_finished(JNIEnv* env, jobject) {
-  if (state == kEndFeats) {
-    LOG(INFO) << "wenet recognize finished";
+  if (decode_thread_done) {
+    LOG(INFO) << "wenet recognize finished (decode_thread_done)";
     return JNI_TRUE;
   }
   return JNI_FALSE;

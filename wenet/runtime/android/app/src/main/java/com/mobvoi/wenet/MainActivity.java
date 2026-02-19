@@ -29,8 +29,11 @@ import android.text.style.ClickableSpan;
 import android.text.style.ForegroundColorSpan;
 import android.util.Log;
 import android.view.View;
+import android.widget.BaseAdapter;
 import android.widget.Button;
+import android.widget.EditText;
 import android.widget.LinearLayout;
+import android.widget.ListView;
 import android.widget.ScrollView;
 import android.widget.SeekBar;
 import android.widget.TextView;
@@ -581,8 +584,13 @@ public class MainActivity extends AppCompatActivity {
   private void updateResultAndScroll(String text) {
     TextView textView = findViewById(R.id.textView);
     ScrollView scrollView = findViewById(R.id.scrollView);
+    // Auto-scroll only if user is already near the bottom
+    boolean atBottom = (scrollView.getChildAt(0).getBottom()
+        - scrollView.getHeight() - scrollView.getScrollY()) < 100;
     textView.setText(text);
-    scrollView.post(() -> scrollView.fullScroll(ScrollView.FOCUS_DOWN));
+    if (atBottom) {
+      scrollView.post(() -> scrollView.fullScroll(ScrollView.FOCUS_DOWN));
+    }
   }
 
   private void startAsrThread() {
@@ -891,6 +899,19 @@ public class MainActivity extends AppCompatActivity {
             pos += written;
             if (isPlaying) {
               playbackPositionBytes = pos;
+              // Feed visualization
+              int samplesRead = bytesRead / 2;
+              short[] samples = new short[samplesRead];
+              java.nio.ByteBuffer.wrap(chunk, 0, bytesRead)
+                  .order(java.nio.ByteOrder.LITTLE_ENDIAN).asShortBuffer()
+                  .get(samples, 0, samplesRead);
+              if (useSpectrogram) {
+                ((SpectrogramView) findViewById(R.id.spectrogramView))
+                    .addSamples(samples, samplesRead);
+              } else {
+                ((VoiceRectView) findViewById(R.id.voiceRectView))
+                    .add(calculateDb(samples));
+              }
             }
           } else {
             break;
@@ -911,6 +932,11 @@ public class MainActivity extends AppCompatActivity {
           ppBtn.setText("Play");
           updatePlaybackUI(0);
           updateKaraokeHighlight(0);
+          if (useSpectrogram) {
+            ((SpectrogramView) findViewById(R.id.spectrogramView)).clear();
+          } else {
+            ((VoiceRectView) findViewById(R.id.voiceRectView)).zero();
+          }
         });
       }
     });
@@ -1016,10 +1042,11 @@ public class MainActivity extends AppCompatActivity {
   }
 
   private String formatTimeMs(int ms) {
-    int sec = ms / 1000;
-    int min = sec / 60;
-    sec = sec % 60;
-    return String.format("%d:%02d", min, sec);
+    int totalSec = ms / 1000;
+    int h = totalSec / 3600;
+    int m = (totalSec % 3600) / 60;
+    int s = totalSec % 60;
+    return String.format("%02d:%02d:%02d", h, m, s);
   }
 
   // --- Karaoke ---
@@ -1147,20 +1174,57 @@ public class MainActivity extends AppCompatActivity {
   // --- Recordings Dialog ---
 
   private void showRecordingsDialog() {
-    List<String> recordings = RecordingManager.listRecordings(this);
-    if (recordings.isEmpty()) {
+    List<RecordingManager.SearchResult> allResults =
+        RecordingManager.searchRecordings(this, "");
+    if (allResults.isEmpty()) {
       Toast.makeText(this, "No recordings found", Toast.LENGTH_SHORT).show();
       return;
     }
 
-    String[] items = recordings.toArray(new String[0]);
-    new AlertDialog.Builder(this)
+    View dialogView = getLayoutInflater().inflate(R.layout.dialog_recordings, null);
+    EditText searchEdit = dialogView.findViewById(R.id.searchEditText);
+    ListView listView = dialogView.findViewById(R.id.recordingsListView);
+
+    List<RecordingManager.SearchResult> displayList = new ArrayList<>(allResults);
+
+    BaseAdapter adapter = new BaseAdapter() {
+      @Override public int getCount() { return displayList.size(); }
+      @Override public Object getItem(int pos) { return displayList.get(pos); }
+      @Override public long getItemId(int pos) { return pos; }
+      @Override
+      public View getView(int pos, View convertView, android.view.ViewGroup parent) {
+        if (convertView == null) {
+          convertView = getLayoutInflater().inflate(R.layout.item_recording, parent, false);
+        }
+        RecordingManager.SearchResult sr = displayList.get(pos);
+        ((TextView) convertView.findViewById(R.id.recordingName)).setText(sr.name);
+        ((TextView) convertView.findViewById(R.id.recordingPreview)).setText(sr.preview);
+        return convertView;
+      }
+    };
+    listView.setAdapter(adapter);
+
+    AlertDialog dialog = new AlertDialog.Builder(this)
         .setTitle("Recordings")
-        .setItems(items, (dialog, which) -> {
-          stopPlayback();
-          enterPlaybackMode(items[which]);
-        })
+        .setView(dialogView)
         .setNegativeButton("Cancel", null)
-        .show();
+        .create();
+
+    listView.setOnItemClickListener((parent, view, pos, id) -> {
+      dialog.dismiss();
+      stopPlayback();
+      enterPlaybackMode(displayList.get(pos).name);
+    });
+
+    searchEdit.setOnEditorActionListener((v, actionId, event) -> {
+      String keyword = searchEdit.getText().toString().trim();
+      displayList.clear();
+      displayList.addAll(RecordingManager.searchRecordings(
+          MainActivity.this, keyword));
+      adapter.notifyDataSetChanged();
+      return true;
+    });
+
+    dialog.show();
   }
 }

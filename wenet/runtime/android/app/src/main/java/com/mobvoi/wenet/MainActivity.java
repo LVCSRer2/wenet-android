@@ -95,9 +95,45 @@ public class MainActivity extends AppCompatActivity {
     public void onReceive(Context context, Intent intent) {
       int state = intent.getIntExtra(AudioManager.EXTRA_SCO_AUDIO_STATE, -1);
       if (state == AudioManager.SCO_AUDIO_STATE_CONNECTED) {
-        Log.i(LOG_TAG, "Bluetooth SCO connected - using BT mic");
+        Log.i(LOG_TAG, "Bluetooth SCO connected");
       } else if (state == AudioManager.SCO_AUDIO_STATE_DISCONNECTED) {
-        Log.i(LOG_TAG, "Bluetooth SCO disconnected - using phone mic");
+        Log.i(LOG_TAG, "Bluetooth SCO disconnected");
+      }
+    }
+  };
+  private final android.media.AudioDeviceCallback audioDeviceCallback =
+      new android.media.AudioDeviceCallback() {
+    @Override
+    public void onAudioDevicesAdded(android.media.AudioDeviceInfo[] addedDevices) {
+      for (android.media.AudioDeviceInfo device : addedDevices) {
+        if (device.getType() == android.media.AudioDeviceInfo.TYPE_BLUETOOTH_SCO) {
+          Log.i(LOG_TAG, "BT device added: " + device.getProductName());
+          // Pre-establish SCO link so next recording will use BT
+          String micDevice = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
+              .getString("mic_device", "bluetooth");
+          if (!"phone".equals(micDevice)) {
+            startBluetoothMic();
+          }
+          if (startRecord) {
+            runOnUiThread(() -> Toast.makeText(MainActivity.this,
+                "블루투스 연결됨. 녹음을 재시작하세요.", Toast.LENGTH_LONG).show());
+          }
+          return;
+        }
+      }
+    }
+
+    @Override
+    public void onAudioDevicesRemoved(android.media.AudioDeviceInfo[] removedDevices) {
+      for (android.media.AudioDeviceInfo device : removedDevices) {
+        if (device.getType() == android.media.AudioDeviceInfo.TYPE_BLUETOOTH_SCO) {
+          Log.i(LOG_TAG, "BT disconnected during recording: " + device.getProductName());
+          bluetoothScoOn = false;
+          if (startRecord) {
+            runOnUiThread(() -> Toast.makeText(MainActivity.this,
+                "블루투스 연결 해제됨. 폰 마이크로 계속 녹음합니다.", Toast.LENGTH_LONG).show());
+          }
+        }
       }
     }
   };
@@ -194,6 +230,7 @@ public class MainActivity extends AppCompatActivity {
     audioManager = (AudioManager) getSystemService(Context.AUDIO_SERVICE);
     registerReceiver(scoReceiver,
         new IntentFilter(AudioManager.ACTION_SCO_AUDIO_STATE_UPDATED));
+    audioManager.registerAudioDeviceCallback(audioDeviceCallback, new Handler(Looper.getMainLooper()));
     requestAudioPermissions();
     try {
       assetsInit(this);
@@ -436,6 +473,7 @@ public class MainActivity extends AppCompatActivity {
     stopPlayback();
     stopBluetoothMic();
     try { unregisterReceiver(scoReceiver); } catch (Exception ignored) {}
+    try { audioManager.unregisterAudioDeviceCallback(audioDeviceCallback); } catch (Exception ignored) {}
   }
 
   private void requestAudioPermissions() {

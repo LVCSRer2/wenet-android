@@ -1,7 +1,11 @@
 <?xml version="1.0" encoding="utf-8"?>
-<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
-    android:layout_height="match_parent"
+    android:layout_height="match_parent">
+
+<LinearLayout
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
     android:orientation="vertical"
     android:padding="24dp">
 
@@ -124,6 +128,32 @@
     <TextView
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
+        android:text="Audio Processing"
+        android:textSize="16sp"
+        android:layout_marginBottom="8dp" />
+
+    <CheckBox
+        android:id="@+id/checkAec"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="AEC (Echo Cancellation)" />
+
+    <CheckBox
+        android:id="@+id/checkNs"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="NS (Noise Suppression)" />
+
+    <CheckBox
+        android:id="@+id/checkAgc"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="AGC (Auto Gain Control)"
+        android:layout_marginBottom="24dp" />
+
+    <TextView
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
         android:text="Slack Webhook URL"
         android:textSize="16sp"
         android:layout_marginBottom="8dp" />
@@ -144,3 +174,4 @@
         android:layout_marginTop="16dp" />
 
 </LinearLayout>
+</ScrollView>

@@ -4,6 +4,7 @@ import android.content.Intent;
 import android.content.SharedPreferences;
 import android.os.Bundle;
 import android.widget.Button;
+import android.widget.CheckBox;
 import android.widget.EditText;
 import android.widget.RadioButton;
 import android.widget.RadioGroup;
@@ -18,6 +19,9 @@ public class SettingsActivity extends AppCompatActivity {
     private static final String KEY_VIZ_TYPE = "viz_type";
     private static final String KEY_MIC_DEVICE = "mic_device";
     private static final String KEY_PLAY_DEVICE = "play_device";
+    private static final String KEY_AEC = "audio_aec";
+    private static final String KEY_NS = "audio_ns";
+    private static final String KEY_AGC = "audio_agc";
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -66,6 +70,14 @@ public class SettingsActivity extends AppCompatActivity {
             playGroup.check(R.id.radioPlayPhone);
         }
 
+        // Audio processing checkboxes
+        CheckBox checkAec = findViewById(R.id.checkAec);
+        CheckBox checkNs = findViewById(R.id.checkNs);
+        CheckBox checkAgc = findViewById(R.id.checkAgc);
+        checkAec.setChecked(prefs.getBoolean(KEY_AEC, true));
+        checkNs.setChecked(prefs.getBoolean(KEY_NS, true));
+        checkAgc.setChecked(prefs.getBoolean(KEY_AGC, true));
+
         Button saveButton = findViewById(R.id.saveButton);
         saveButton.setOnClickListener(v -> {
             String url = urlEditText.getText().toString().trim();
@@ -90,6 +102,11 @@ public class SettingsActivity extends AppCompatActivity {
             String newPlay = playGroup.getCheckedRadioButtonId() == R.id.radioPlayBluetooth
                 ? "bluetooth" : "phone";
             prefs.edit().putString(KEY_PLAY_DEVICE, newPlay).apply();
+
+            // Save audio processing settings
+            prefs.edit().putBoolean(KEY_AEC, checkAec.isChecked()).apply();
+            prefs.edit().putBoolean(KEY_NS, checkNs.isChecked()).apply();
+            prefs.edit().putBoolean(KEY_AGC, checkAgc.isChecked()).apply();
 
             Intent result = new Intent();
             boolean changed = false;

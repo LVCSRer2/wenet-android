@@ -16,6 +16,9 @@ import android.media.AudioManager;
 import android.media.AudioRecord;
 import android.media.AudioTrack;
 import android.media.MediaRecorder;
+import android.media.audiofx.AcousticEchoCanceler;
+import android.media.audiofx.AutomaticGainControl;
+import android.media.audiofx.NoiseSuppressor;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
@@ -85,6 +88,9 @@ public class MainActivity extends AppCompatActivity {
   private boolean startRecord = false;
   private AudioRecord record = null;
   private int miniBufferSize = 0;
+  private AcousticEchoCanceler aec = null;
+  private NoiseSuppressor ns = null;
+  private AutomaticGainControl agc = null;
   private final BlockingQueue<short[]> bufferQueue = new ArrayBlockingQueue<>(MAX_QUEUE_SIZE);
 
   // Bluetooth SCO
@@ -575,7 +581,7 @@ public class MainActivity extends AppCompatActivity {
       Log.e(LOG_TAG, "Audio buffer can't initialize!");
       return;
     }
-    record = new AudioRecord(MediaRecorder.AudioSource.VOICE_COMMUNICATION,
+    record = new AudioRecord(MediaRecorder.AudioSource.MIC,
         SAMPLE_RATE,
         AudioFormat.CHANNEL_IN_MONO,
         AudioFormat.ENCODING_PCM_16BIT,
@@ -584,7 +590,52 @@ public class MainActivity extends AppCompatActivity {
       Log.e(LOG_TAG, "Audio Record can't initialize!");
       return;
     }
+
+    // Apply audio processing based on settings
+    android.content.SharedPreferences prefs =
+        getSharedPreferences(PREFS_NAME, MODE_PRIVATE);
+    int sessionId = record.getAudioSessionId();
+
+    boolean useAec = prefs.getBoolean("audio_aec", true);
+    if (AcousticEchoCanceler.isAvailable()) {
+      aec = AcousticEchoCanceler.create(sessionId);
+      if (aec != null) {
+        aec.setEnabled(useAec);
+        Log.i(LOG_TAG, "AEC " + (useAec ? "enabled" : "disabled"));
+      }
+    } else {
+      Log.w(LOG_TAG, "AEC not available on this device");
+    }
+
+    boolean useNs = prefs.getBoolean("audio_ns", true);
+    if (NoiseSuppressor.isAvailable()) {
+      ns = NoiseSuppressor.create(sessionId);
+      if (ns != null) {
+        ns.setEnabled(useNs);
+        Log.i(LOG_TAG, "NS " + (useNs ? "enabled" : "disabled"));
+      }
+    } else {
+      Log.w(LOG_TAG, "NS not available on this device");
+    }
+
+    boolean useAgc = prefs.getBoolean("audio_agc", true);
+    if (AutomaticGainControl.isAvailable()) {
+      agc = AutomaticGainControl.create(sessionId);
+      if (agc != null) {
+        agc.setEnabled(useAgc);
+        Log.i(LOG_TAG, "AGC " + (useAgc ? "enabled" : "disabled"));
+      }
+    } else {
+      Log.w(LOG_TAG, "AGC not available on this device");
+    }
+
     Log.i(LOG_TAG, "Record init okay");
+  }
+
+  private void releaseAudioEffects() {
+    if (aec != null) { aec.release(); aec = null; }
+    if (ns != null) { ns.release(); ns = null; }
+    if (agc != null) { agc.release(); agc = null; }
   }
 
   private void startRecordThread() {
@@ -628,6 +679,7 @@ public class MainActivity extends AppCompatActivity {
         }
       }
       record.stop();
+      releaseAudioEffects();
       stopBluetoothMic();
       if (useSpectrogram) {
         spectrogramView.clear();

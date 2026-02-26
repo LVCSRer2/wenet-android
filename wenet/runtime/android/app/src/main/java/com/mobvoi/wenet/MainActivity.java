@@ -15,10 +15,12 @@ import android.media.AudioFormat;
 import android.media.AudioManager;
 import android.media.AudioRecord;
 import android.media.AudioTrack;
+import android.media.MediaPlayer;
 import android.media.MediaRecorder;
 import android.media.audiofx.AcousticEchoCanceler;
 import android.media.audiofx.AutomaticGainControl;
 import android.media.audiofx.NoiseSuppressor;
+import android.media.audiofx.Visualizer;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
@@ -158,6 +160,9 @@ public class MainActivity extends AppCompatActivity {
 
   // Playback (file-streaming, no full load into memory)
   private AudioTrack audioTrack = null;
+  private MediaPlayer mediaPlayer = null;
+  private Visualizer playbackVisualizer = null;
+  private boolean isCompressedAudio = false;
   private String playbackAudioPath = null;
   private long pcmFileLength = 0;
   private boolean isPlaying = false;
@@ -345,7 +350,7 @@ public class MainActivity extends AppCompatActivity {
         currentRecordingName = RecordingManager.createRecordingDir(this);
         try {
           pcmOutputStream = new FileOutputStream(
-              RecordingManager.getAudioPath(this, currentRecordingName));
+              RecordingManager.getPcmAudioPath(this, currentRecordingName));
         } catch (IOException e) {
           Log.e(LOG_TAG, "Failed to open PCM output: " + e.getMessage());
           pcmOutputStream = null;
@@ -760,11 +765,12 @@ public class MainActivity extends AppCompatActivity {
       final String finalDisplay = buildLiveDisplay();
       runOnUiThread(() -> updateResultAndScroll(finalDisplay));
 
-      // Wait for final result
+      // Wait for final result — show processing indicator
+      runOnUiThread(() -> Toast.makeText(MainActivity.this,
+          "처리 중...", Toast.LENGTH_LONG).show());
       while (true) {
         if (!Recognize.getFinished()) {
-          final String d = buildLiveDisplay();
-          runOnUiThread(() -> updateResultAndScroll(d));
+          try { Thread.sleep(200); } catch (InterruptedException ignored) {}
         } else {
           // Save result.json with timed result
           saveTimedResult();
@@ -780,6 +786,26 @@ public class MainActivity extends AppCompatActivity {
             timestampedResult = lastDisplayedText.trim();
             Log.i(LOG_TAG, "Using lastDisplayedText as timestampedResult fallback");
           }
+
+          // Convert PCM → M4A (compressed)
+          if (currentRecordingName != null) {
+            runOnUiThread(() -> Toast.makeText(MainActivity.this,
+                "오디오 변환 중...", Toast.LENGTH_SHORT).show());
+            String pcmPath = RecordingManager.getPcmAudioPath(
+                MainActivity.this, currentRecordingName);
+            String m4aPath = RecordingManager.getCompressedAudioPath(
+                MainActivity.this, currentRecordingName);
+            if (new File(pcmPath).exists()) {
+              boolean ok = AudioConverter.convertPcmToM4a(pcmPath, m4aPath, SAMPLE_RATE);
+              if (ok && new File(m4aPath).exists()) {
+                new File(pcmPath).delete();
+                Log.i(LOG_TAG, "PCM deleted, M4A saved: " + m4aPath);
+              } else {
+                Log.w(LOG_TAG, "M4A conversion failed, keeping PCM");
+              }
+            }
+          }
+
           SlackWebhookSender.send(
               getApplicationContext(), currentRecordingName, timestampedResult);
           stopService(new Intent(MainActivity.this, RecordingForegroundService.class));
@@ -825,17 +851,21 @@ public class MainActivity extends AppCompatActivity {
           JSONObject obj = arr.getJSONObject(i);
           String w = obj.getString("w");
           int startMs = obj.getInt("s");
+          // Newline marker = endpoint boundary
+          if ("\n".equals(w)) {
+            if (cachedInProgressSentence.length() > 0) {
+              cachedConfirmedText.append("[").append(formatTimeMs(cachedInProgressStartMs)).append("] ")
+                  .append(cachedInProgressSentence.toString().trim()).append("\n");
+              cachedInProgressSentence = new StringBuilder();
+              cachedInProgressStartMs = -1;
+            }
+            continue;
+          }
           if (cachedInProgressStartMs == -1) cachedInProgressStartMs = startMs;
           if ("\u2581".equals(w)) {
             cachedInProgressSentence.append(" ");
           } else {
             cachedInProgressSentence.append(w);
-          }
-          if (".".equals(w) || "?".equals(w) || "!".equals(w)) {
-            cachedConfirmedText.append("[").append(formatTimeMs(cachedInProgressStartMs)).append("] ")
-                .append(cachedInProgressSentence.toString().trim()).append("\n");
-            cachedInProgressSentence = new StringBuilder();
-            cachedInProgressStartMs = -1;
           }
         }
       }
@@ -886,17 +916,21 @@ public class MainActivity extends AppCompatActivity {
         JSONObject obj = arr.getJSONObject(i);
         String w = obj.getString("w");
         int startMs = obj.getInt("s");
+        // Newline marker = endpoint boundary
+        if ("\n".equals(w)) {
+          if (sentence.toString().trim().length() > 0) {
+            result.append("[").append(formatTimeMs(sentenceStartMs)).append("] ")
+                .append(sentence.toString().trim()).append("\n");
+            sentence = new StringBuilder();
+            sentenceStartMs = -1;
+          }
+          continue;
+        }
         if (sentenceStartMs == -1) sentenceStartMs = startMs;
         if ("\u2581".equals(w)) {
           sentence.append(" ");
         } else {
           sentence.append(w);
-        }
-        if (".".equals(w) || "?".equals(w) || "!".equals(w)) {
-          result.append("[").append(formatTimeMs(sentenceStartMs)).append("] ")
-              .append(sentence.toString().trim()).append("\n");
-          sentence = new StringBuilder();
-          sentenceStartMs = -1;
         }
       }
       if (sentence.toString().trim().length() > 0) {
@@ -916,17 +950,21 @@ public class MainActivity extends AppCompatActivity {
     StringBuilder sentence = new StringBuilder();
     int sentenceStartMs = -1;
     for (WordSpan ws : spans) {
+      // Newline marker = endpoint boundary
+      if ("\n".equals(ws.word)) {
+        if (sentence.toString().trim().length() > 0) {
+          result.append("[").append(formatTimeMs(sentenceStartMs)).append("] ")
+              .append(sentence.toString().trim()).append("\n");
+          sentence = new StringBuilder();
+          sentenceStartMs = -1;
+        }
+        continue;
+      }
       if (sentenceStartMs == -1) sentenceStartMs = ws.startMs;
       if ("\u2581".equals(ws.word)) {
         sentence.append(" ");
       } else {
         sentence.append(ws.word);
-      }
-      if (".".equals(ws.word) || "?".equals(ws.word) || "!".equals(ws.word)) {
-        result.append("[").append(formatTimeMs(sentenceStartMs)).append("] ")
-            .append(sentence.toString().trim()).append("\n");
-        sentence = new StringBuilder();
-        sentenceStartMs = -1;
       }
     }
     if (sentence.toString().trim().length() > 0) {
@@ -949,7 +987,26 @@ public class MainActivity extends AppCompatActivity {
     }
 
     playbackAudioPath = audioPath;
-    pcmFileLength = audioFile.length();
+    isCompressedAudio = audioPath.endsWith(".m4a");
+
+    int durationMs;
+    if (isCompressedAudio) {
+      // Use MediaPlayer to get duration
+      try {
+        MediaPlayer tmp = new MediaPlayer();
+        tmp.setDataSource(audioPath);
+        tmp.prepare();
+        durationMs = tmp.getDuration();
+        tmp.release();
+      } catch (Exception e) {
+        Log.e(LOG_TAG, "Error getting M4A duration: " + e.getMessage());
+        durationMs = 0;
+      }
+      pcmFileLength = 0;
+    } else {
+      pcmFileLength = audioFile.length();
+      durationMs = (int) (pcmFileLength * 1000L / (SAMPLE_RATE * 2));
+    }
 
     // Load word spans
     wordSpans = loadWordSpans(recordingName);
@@ -962,7 +1019,6 @@ public class MainActivity extends AppCompatActivity {
     playbackLayout.setVisibility(View.VISIBLE);
 
     // Set up seekbar
-    int durationMs = (int) (pcmFileLength * 1000L / (SAMPLE_RATE * 2));
     SeekBar seekBar = findViewById(R.id.seekBar);
     seekBar.setMax(durationMs);
     seekBar.setProgress(0);
@@ -1012,6 +1068,147 @@ public class MainActivity extends AppCompatActivity {
     Button playPauseButton = findViewById(R.id.playPauseButton);
     playPauseButton.setText("Pause");
 
+    if (isCompressedAudio) {
+      resumePlaybackMediaPlayer();
+    } else {
+      resumePlaybackPcm();
+    }
+
+    // Start UI updater
+    startPlaybackUpdater();
+  }
+
+  private void resumePlaybackMediaPlayer() {
+    try {
+      if (mediaPlayer == null) {
+        mediaPlayer = new MediaPlayer();
+        mediaPlayer.setDataSource(playbackAudioPath);
+
+        // Route playback based on setting
+        String playDevice = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
+            .getString("play_device", "phone");
+        if ("bluetooth".equals(playDevice)) {
+          android.media.AudioDeviceInfo[] outputDevices =
+              audioManager.getDevices(AudioManager.GET_DEVICES_OUTPUTS);
+          for (android.media.AudioDeviceInfo device : outputDevices) {
+            if (device.getType() == android.media.AudioDeviceInfo.TYPE_BLUETOOTH_A2DP
+                || device.getType() == android.media.AudioDeviceInfo.TYPE_BLUETOOTH_SCO) {
+              mediaPlayer.setPreferredDevice(device);
+              Log.i(LOG_TAG, "MediaPlayer routed to BT: " + device.getProductName());
+              break;
+            }
+          }
+        } else {
+          android.media.AudioDeviceInfo[] outputDevices =
+              audioManager.getDevices(AudioManager.GET_DEVICES_OUTPUTS);
+          for (android.media.AudioDeviceInfo device : outputDevices) {
+            if (device.getType() == android.media.AudioDeviceInfo.TYPE_BUILTIN_SPEAKER) {
+              mediaPlayer.setPreferredDevice(device);
+              Log.i(LOG_TAG, "MediaPlayer forced to phone speaker");
+              break;
+            }
+          }
+        }
+
+        mediaPlayer.prepare();
+        mediaPlayer.setOnCompletionListener(mp -> {
+          isPlaying = false;
+          stopPlaybackUpdater();
+          Button ppBtn = findViewById(R.id.playPauseButton);
+          ppBtn.setText("Play");
+          updatePlaybackUI(0);
+          updateKaraokeHighlight(0);
+          if (useSpectrogram) {
+            ((SpectrogramView) findViewById(R.id.spectrogramView)).clear();
+          } else {
+            ((VoiceRectView) findViewById(R.id.voiceRectView)).zero();
+          }
+          releaseMediaPlayer();
+        });
+
+        // Seek to saved position if resuming
+        if (playbackPositionBytes > 0) {
+          mediaPlayer.seekTo((int) playbackPositionBytes); // reuse as ms for compressed
+        }
+      }
+      mediaPlayer.start();
+      attachVisualizer(mediaPlayer.getAudioSessionId());
+    } catch (Exception e) {
+      Log.e(LOG_TAG, "MediaPlayer error: " + e.getMessage());
+      isPlaying = false;
+    }
+  }
+
+  private void attachVisualizer(int audioSessionId) {
+    releaseVisualizer();
+    try {
+      playbackVisualizer = new Visualizer(audioSessionId);
+      int captureSize = Visualizer.getCaptureSizeRange()[1]; // max size
+      playbackVisualizer.setCaptureSize(captureSize);
+      playbackVisualizer.setDataCaptureListener(
+          new Visualizer.OnDataCaptureListener() {
+            @Override
+            public void onWaveFormDataCapture(Visualizer visualizer,
+                byte[] waveform, int samplingRate) {
+              int outputRate = samplingRate / 1000;
+              int decimation = Math.max(1, outputRate / SAMPLE_RATE);
+              if (useSpectrogram) {
+                int outLen = waveform.length / decimation;
+                short[] samples = new short[outLen];
+                for (int i = 0; i < outLen; i++) {
+                  samples[i] = (short) (((waveform[i * decimation] & 0xFF) - 128) * 256);
+                }
+                SpectrogramView sv = findViewById(R.id.spectrogramView);
+                sv.addSamples(samples, outLen);
+              } else {
+                // Compute RMS directly from 8-bit data for proper dynamic range
+                double sum = 0;
+                int count = 0;
+                for (int i = 0; i < waveform.length; i += decimation) {
+                  int val = (waveform[i] & 0xFF) - 128;
+                  sum += val * val;
+                  count++;
+                }
+                double rms = Math.sqrt(sum / count);
+                double level = Math.min(1.0, rms / 80.0);
+                VoiceRectView vv = findViewById(R.id.voiceRectView);
+                vv.add(level);
+              }
+            }
+            @Override
+            public void onFftDataCapture(Visualizer visualizer,
+                byte[] fft, int samplingRate) {
+              // not used
+            }
+          },
+          Visualizer.getMaxCaptureRate(), true, false);
+      playbackVisualizer.setEnabled(true);
+      Log.i(LOG_TAG, "Visualizer attached, captureSize=" + captureSize);
+    } catch (Exception e) {
+      Log.w(LOG_TAG, "Visualizer not available: " + e.getMessage());
+      playbackVisualizer = null;
+    }
+  }
+
+  private void releaseVisualizer() {
+    if (playbackVisualizer != null) {
+      try {
+        playbackVisualizer.setEnabled(false);
+        playbackVisualizer.release();
+      } catch (Exception ignored) {}
+      playbackVisualizer = null;
+    }
+  }
+
+  private void releaseMediaPlayer() {
+    releaseVisualizer();
+    if (mediaPlayer != null) {
+      try { mediaPlayer.release(); } catch (Exception ignored) {}
+      mediaPlayer = null;
+    }
+  }
+
+  private void resumePlaybackPcm() {
     int bufSize = AudioTrack.getMinBufferSize(SAMPLE_RATE,
         AudioFormat.CHANNEL_OUT_MONO, AudioFormat.ENCODING_PCM_16BIT);
 
@@ -1037,8 +1234,6 @@ public class MainActivity extends AppCompatActivity {
           audioManager.getDevices(AudioManager.GET_DEVICES_OUTPUTS);
       android.media.AudioDeviceInfo btDevice = null;
       for (android.media.AudioDeviceInfo device : outputDevices) {
-        Log.i(LOG_TAG, "Output device: type=" + device.getType()
-            + " name=" + device.getProductName());
         if (device.getType() == android.media.AudioDeviceInfo.TYPE_BLUETOOTH_A2DP
             || device.getType() == android.media.AudioDeviceInfo.TYPE_BLUETOOTH_SCO) {
           btDevice = device;
@@ -1048,17 +1243,13 @@ public class MainActivity extends AppCompatActivity {
         audioTrack.setPreferredDevice(btDevice);
         Log.i(LOG_TAG, "Playback routed to BT: type=" + btDevice.getType()
             + " name=" + btDevice.getProductName());
-      } else {
-        Log.i(LOG_TAG, "No Bluetooth output device found, using phone speaker");
       }
     } else {
-      // Force playback to phone speaker (bypass BT A2DP default routing)
       android.media.AudioDeviceInfo[] outputDevices =
           audioManager.getDevices(AudioManager.GET_DEVICES_OUTPUTS);
       for (android.media.AudioDeviceInfo device : outputDevices) {
         if (device.getType() == android.media.AudioDeviceInfo.TYPE_BUILTIN_SPEAKER) {
           audioTrack.setPreferredDevice(device);
-          Log.i(LOG_TAG, "Playback forced to phone speaker");
           break;
         }
       }
@@ -1131,9 +1322,6 @@ public class MainActivity extends AppCompatActivity {
       }
     });
     playbackThread.start();
-
-    // Start UI updater
-    startPlaybackUpdater();
   }
 
   private void pausePlayback() {
@@ -1141,26 +1329,37 @@ public class MainActivity extends AppCompatActivity {
     Button playPauseButton = findViewById(R.id.playPauseButton);
     playPauseButton.setText("Play");
     stopPlaybackUpdater();
-    if (audioTrack != null) {
+    if (isCompressedAudio && mediaPlayer != null) {
       try {
-        audioTrack.pause();
-        audioTrack.flush();
-        audioTrack.stop();
-        audioTrack.release();
-      } catch (IllegalStateException e) {
-        Log.e(LOG_TAG, "Error stopping AudioTrack: " + e.getMessage());
+        playbackPositionBytes = mediaPlayer.getCurrentPosition(); // store ms
+        mediaPlayer.pause();
+        releaseVisualizer();
+      } catch (Exception e) {
+        Log.e(LOG_TAG, "Error pausing MediaPlayer: " + e.getMessage());
       }
-      audioTrack = null;
-    }
-    if (playbackThread != null) {
-      try { playbackThread.join(500); } catch (InterruptedException ignored) {}
-      playbackThread = null;
+    } else {
+      if (audioTrack != null) {
+        try {
+          audioTrack.pause();
+          audioTrack.flush();
+          audioTrack.stop();
+          audioTrack.release();
+        } catch (IllegalStateException e) {
+          Log.e(LOG_TAG, "Error stopping AudioTrack: " + e.getMessage());
+        }
+        audioTrack = null;
+      }
+      if (playbackThread != null) {
+        try { playbackThread.join(500); } catch (InterruptedException ignored) {}
+        playbackThread = null;
+      }
     }
   }
 
   private void stopPlayback() {
     isPlaying = false;
     stopPlaybackUpdater();
+    releaseMediaPlayer();
     if (audioTrack != null) {
       try {
         audioTrack.pause();
@@ -1175,24 +1374,33 @@ public class MainActivity extends AppCompatActivity {
     playbackPositionBytes = 0;
     playbackAudioPath = null;
     pcmFileLength = 0;
+    isCompressedAudio = false;
   }
 
   private void seekToMs(int ms) {
-    long bytePos = (long) ms * SAMPLE_RATE * 2 / 1000;
-    bytePos = bytePos & ~1L;
-    if (bytePos < 0) bytePos = 0;
-    if (bytePos > pcmFileLength) bytePos = pcmFileLength;
+    if (isCompressedAudio) {
+      if (mediaPlayer != null) {
+        mediaPlayer.seekTo(ms);
+        playbackPositionBytes = ms; // store ms for compressed
+      }
+      updatePlaybackUI(ms);
+      updateKaraokeHighlight(ms);
+    } else {
+      long bytePos = (long) ms * SAMPLE_RATE * 2 / 1000;
+      bytePos = bytePos & ~1L;
+      if (bytePos < 0) bytePos = 0;
+      if (bytePos > pcmFileLength) bytePos = pcmFileLength;
 
-    boolean wasPlaying = isPlaying;
-    if (wasPlaying) {
-      pausePlayback();  // Stops thread and waits for join
-    }
-    // Set position AFTER thread is fully stopped
-    playbackPositionBytes = bytePos;
-    updatePlaybackUI(ms);
-    updateKaraokeHighlight(ms);
-    if (wasPlaying) {
-      resumePlayback();
+      boolean wasPlaying = isPlaying;
+      if (wasPlaying) {
+        pausePlayback();  // Stops thread and waits for join
+      }
+      playbackPositionBytes = bytePos;
+      updatePlaybackUI(ms);
+      updateKaraokeHighlight(ms);
+      if (wasPlaying) {
+        resumePlayback();
+      }
     }
   }
 
@@ -1202,7 +1410,16 @@ public class MainActivity extends AppCompatActivity {
       @Override
       public void run() {
         if (isPlaying) {
-          int ms = bytesToMs(playbackPositionBytes);
+          int ms;
+          if (isCompressedAudio && mediaPlayer != null) {
+            try {
+              ms = mediaPlayer.getCurrentPosition();
+            } catch (Exception e) {
+              ms = 0;
+            }
+          } else {
+            ms = bytesToMs(playbackPositionBytes);
+          }
           updatePlaybackUI(ms);
           updateKaraokeHighlight(ms);
           uiHandler.postDelayed(this, PLAYBACK_UPDATE_MS);
@@ -1252,13 +1469,24 @@ public class MainActivity extends AppCompatActivity {
     currentBgSpan = null;
     currentFgSpan = null;
 
-    // Group words into sentences, inserting [M:SS] prefix per sentence
+    // Group words into segments by endpoint boundary markers
     int sentenceStartMs = -1;
     boolean needNewLine = false;
     for (int i = 0; i < wordSpans.size(); i++) {
       WordSpan ws = wordSpans.get(i);
 
-      // Start of a new sentence: insert timestamp prefix
+      // Newline marker = endpoint boundary
+      if ("\n".equals(ws.word)) {
+        if (sentenceStartMs != -1) {
+          sentenceStartMs = -1;
+          needNewLine = true;
+        }
+        karaokeSpanStarts[i] = karaokeSSB.length();
+        karaokeSpanEnds[i] = karaokeSSB.length();
+        continue;
+      }
+
+      // Start of a new segment: insert timestamp prefix
       if (sentenceStartMs == -1) {
         if (needNewLine) karaokeSSB.append("\n");
         sentenceStartMs = ws.startMs;
@@ -1274,12 +1502,6 @@ public class MainActivity extends AppCompatActivity {
         karaokeSpanStarts[i] = karaokeSSB.length();
         karaokeSSB.append(ws.word);
         karaokeSpanEnds[i] = karaokeSSB.length();
-      }
-
-      // End of sentence
-      if (".".equals(ws.word) || "?".equals(ws.word) || "!".equals(ws.word)) {
-        sentenceStartMs = -1;
-        needNewLine = true;
       }
     }
 

@@ -203,6 +203,11 @@ void decode_thread_func() {
       if (decoder->DecodedSomething()) {
         AppendWordPiecesToJson(decoder->result()[0].word_pieces);
       }
+      // Insert newline marker for endpoint boundary
+      if (!timed_result_json.empty()) {
+        timed_result_json += ",";
+      }
+      timed_result_json += R"({"w":"\n","s":0,"e":0})";
       last_partial_pieces.clear();
       endpoint_start_sample = total_samples;
       decoder->ResetContinuousDecoding();

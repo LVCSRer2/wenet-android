@@ -47,20 +47,12 @@ public class RecordingManager {
     return list;
   }
 
-  /** Returns the best available audio file: M4A if exists, else PCM. */
   public static String getAudioPath(Context context, String name) {
-    File dir = new File(getRecordingsRoot(context), name);
-    File m4a = new File(dir, "audio.m4a");
-    if (m4a.exists()) return m4a.getAbsolutePath();
-    return new File(dir, "audio.pcm").getAbsolutePath();
-  }
-
-  public static String getPcmAudioPath(Context context, String name) {
     return new File(new File(getRecordingsRoot(context), name), "audio.pcm").getAbsolutePath();
   }
 
-  public static String getCompressedAudioPath(Context context, String name) {
-    return new File(new File(getRecordingsRoot(context), name), "audio.m4a").getAbsolutePath();
+  public static String getPcmAudioPath(Context context, String name) {
+    return getAudioPath(context, name);
   }
 
   public static String getResultPath(Context context, String name) {

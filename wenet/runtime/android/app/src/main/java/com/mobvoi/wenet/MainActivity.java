@@ -1408,6 +1408,12 @@ public class MainActivity extends AppCompatActivity {
         RecordingManager.SearchResult sr = displayList.get(pos);
         ((TextView) convertView.findViewById(R.id.recordingName)).setText(sr.name);
         ((TextView) convertView.findViewById(R.id.recordingPreview)).setText(sr.preview);
+        // Highlight currently selected recording
+        if (sr.name.equals(currentPlaybackRecording)) {
+          convertView.setBackgroundColor(0x332196F3); // light blue tint
+        } else {
+          convertView.setBackgroundColor(Color.TRANSPARENT);
+        }
         return convertView;
       }
     };

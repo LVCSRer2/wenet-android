@@ -114,6 +114,14 @@ public class RecordingManager {
     return results;
   }
 
+  /** Rename a recording directory. Returns new name on success, null on failure. */
+  public static String renameRecording(Context context, String oldName, String newName) {
+    File oldDir = new File(getRecordingsRoot(context), oldName);
+    File newDir = new File(getRecordingsRoot(context), newName);
+    if (!oldDir.exists() || newDir.exists()) return null;
+    return oldDir.renameTo(newDir) ? newName : null;
+  }
+
   public static void deleteRecording(Context context, String name) {
     File dir = new File(getRecordingsRoot(context), name);
     if (dir.exists() && dir.isDirectory()) {

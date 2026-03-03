@@ -1431,6 +1431,36 @@ public class MainActivity extends AppCompatActivity {
       enterPlaybackMode(displayList.get(pos).name);
     });
 
+    listView.setOnItemLongClickListener((parent, view, pos, id) -> {
+      RecordingManager.SearchResult sr = displayList.get(pos);
+      EditText input = new EditText(this);
+      input.setText(sr.name);
+      input.selectAll();
+      new AlertDialog.Builder(this)
+          .setTitle("이름 변경")
+          .setView(input)
+          .setPositiveButton("확인", (d, which) -> {
+            String newName = input.getText().toString().trim();
+            if (newName.isEmpty() || newName.equals(sr.name)) return;
+            String result = RecordingManager.renameRecording(this, sr.name, newName);
+            if (result != null) {
+              // Update display list
+              displayList.set(pos, new RecordingManager.SearchResult(newName, sr.preview));
+              adapter.notifyDataSetChanged();
+              // Update current playback if renamed
+              if (sr.name.equals(currentPlaybackRecording)) {
+                currentPlaybackRecording = newName;
+              }
+              Toast.makeText(this, "이름 변경 완료", Toast.LENGTH_SHORT).show();
+            } else {
+              Toast.makeText(this, "이름 변경 실패", Toast.LENGTH_SHORT).show();
+            }
+          })
+          .setNegativeButton("취소", null)
+          .show();
+      return true;
+    });
+
     searchEdit.setOnEditorActionListener((v, actionId, event) -> {
       String keyword = searchEdit.getText().toString().trim();
       displayList.clear();

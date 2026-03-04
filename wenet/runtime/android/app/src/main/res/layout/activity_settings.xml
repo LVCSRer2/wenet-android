@@ -148,7 +148,13 @@
         android:id="@+id/checkAgc"
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
-        android:text="AGC (Auto Gain Control)"
+        android:text="AGC (Auto Gain Control)" />
+
+    <CheckBox
+        android:id="@+id/checkVad"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="VAD (Voice Activity Detection)"
         android:layout_marginBottom="24dp" />
 
     <TextView

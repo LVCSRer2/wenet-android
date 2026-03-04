@@ -128,6 +128,10 @@ void accept_waveform(JNIEnv* env, jobject, jshortArray jWaveform) {
   LOG(INFO) << "wenet accept waveform in ms: " << int(size / 8);
 }
 
+void add_skipped_samples(JNIEnv*, jobject, jint count) {
+  total_samples += count;
+}
+
 void set_input_finished() {
   LOG(INFO) << "wenet input finished";
   feature_pipeline->set_input_finished();
@@ -313,6 +317,8 @@ JNIEXPORT jint JNI_OnLoad(JavaVM* vm, void*) {
        reinterpret_cast<void*>(wenet::get_timed_result_delta)},
       {"getResultDelta", "()Ljava/lang/String;",
        reinterpret_cast<void*>(wenet::get_result_delta)},
+      {"addSkippedSamples", "(I)V",
+       reinterpret_cast<void*>(wenet::add_skipped_samples)},
   };
   int rc = env->RegisterNatives(c, methods,
                                 sizeof(methods) / sizeof(JNINativeMethod));

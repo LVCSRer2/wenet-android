@@ -31,6 +31,11 @@ public class VoiceRectView extends View {
 
   private double[] mEnergyBuffer = null;
 
+  // DAW playback mode
+  private boolean playbackMode = false;
+  private float cursorFraction = -1f;
+  private final Paint cursorPaint = new Paint();
+
   public VoiceRectView(Context context) {
     this(context, null);
   }
@@ -107,19 +112,37 @@ public class VoiceRectView extends View {
     Arrays.fill(mEnergyBuffer, 0);
   }
 
+  /** Set full waveform for DAW playback mode. */
+  public void setFullWaveform(double[] energies) {
+    if (energies == null || energies.length == 0) return;
+    playbackMode = true;
+    cursorFraction = 0f;
+    // Resample to mRectCount bars
+    for (int i = 0; i < mRectCount; i++) {
+      int srcIdx = (int) ((long) i * energies.length / mRectCount);
+      mEnergyBuffer[i] = energies[Math.min(srcIdx, energies.length - 1)];
+    }
+    postInvalidate();
+  }
+
+  public void setCursorPosition(float fraction) {
+    cursorFraction = fraction;
+    postInvalidate();
+  }
+
+  public void clearPlaybackMode() {
+    playbackMode = false;
+    cursorFraction = -1f;
+    zero();
+    postInvalidate();
+  }
+
   @Override
   protected void onDraw(Canvas canvas) {
     super.onDraw(canvas);
-    double mRandom;
     float currentHeight;
     for (int i = 0; i < mRectCount; i++) {
-      // 由于只是简单的案例就不监听音频输入，随机模拟一些数字即可
-      mRandom = Math.random();
-
-      //if (i < 1 || i > mRectCount - 2) mRandom = 0;
       currentHeight = (float) (mRectHeight * mEnergyBuffer[i]);
-
-      // 矩形的绘制是从左边开始到上、右、下边（左右边距离左边画布边界的距离，上下边距离上边画布边界的距离）
       canvas.drawRect(
           (float) (mRectWidth * i + offset),
           (mRectHeight - currentHeight) / 2,
@@ -128,7 +151,17 @@ public class VoiceRectView extends View {
           mRectPaint
       );
     }
-    // 使得view延迟重绘
-    postInvalidateDelayed(mSpeed);
+    // Draw cursor line in playback mode
+    if (playbackMode && cursorFraction >= 0f) {
+      int viewWidth = getWidth();
+      float cx = cursorFraction * viewWidth;
+      cursorPaint.setColor(0xFFFF0000);
+      cursorPaint.setStrokeWidth(3f);
+      canvas.drawLine(cx, 0, cx, mRectHeight, cursorPaint);
+    }
+    // Only auto-redraw in streaming mode
+    if (!playbackMode) {
+      postInvalidateDelayed(mSpeed);
+    }
   }
 }

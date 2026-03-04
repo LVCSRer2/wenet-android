@@ -22,6 +22,7 @@ public class SettingsActivity extends AppCompatActivity {
     private static final String KEY_AEC = "audio_aec";
     private static final String KEY_NS = "audio_ns";
     private static final String KEY_AGC = "audio_agc";
+    private static final String KEY_VAD = "vad_enabled";
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -78,6 +79,9 @@ public class SettingsActivity extends AppCompatActivity {
         checkNs.setChecked(prefs.getBoolean(KEY_NS, true));
         checkAgc.setChecked(prefs.getBoolean(KEY_AGC, true));
 
+        CheckBox checkVad = findViewById(R.id.checkVad);
+        checkVad.setChecked(prefs.getBoolean(KEY_VAD, true));
+
         Button saveButton = findViewById(R.id.saveButton);
         saveButton.setOnClickListener(v -> {
             String url = urlEditText.getText().toString().trim();
@@ -107,6 +111,7 @@ public class SettingsActivity extends AppCompatActivity {
             prefs.edit().putBoolean(KEY_AEC, checkAec.isChecked()).apply();
             prefs.edit().putBoolean(KEY_NS, checkNs.isChecked()).apply();
             prefs.edit().putBoolean(KEY_AGC, checkAgc.isChecked()).apply();
+            prefs.edit().putBoolean(KEY_VAD, checkVad.isChecked()).apply();
 
             Intent result = new Intent();
             boolean changed = false;

@@ -17,8 +17,13 @@ public class SpectrogramView extends View {
     private static final int MAX_COLUMNS = 200;
 
     private final Paint bitmapPaint = new Paint(Paint.FILTER_BITMAP_FLAG);
+    private final Paint cursorPaint = new Paint();
     private volatile double dbFloor = -20.0;
     private volatile double dbCeil = 80.0;
+
+    // DAW playback mode
+    private boolean playbackMode = false;
+    private float cursorFraction = -1f;
 
     // Offscreen bitmap: MAX_COLUMNS x FREQ_BINS, updated from recording thread
     private Bitmap offscreen;
@@ -187,16 +192,19 @@ public class SpectrogramView extends View {
 
         Rect dst = new Rect(0, 0, viewW, viewH);
 
-        if (!snapWrapped) {
-            // Not yet filled: draw columns 0..snapColumn-1
+        if (playbackMode) {
+            // DAW mode: draw full spectrogram linearly
+            int cols = snapWrapped ? MAX_COLUMNS : snapColumn;
+            if (cols > 0) {
+                Rect src = new Rect(0, 0, cols, FREQ_BINS);
+                canvas.drawBitmap(offscreen, src, dst, bitmapPaint);
+            }
+        } else if (!snapWrapped) {
             Rect src = new Rect(0, 0, snapColumn, FREQ_BINS);
             canvas.drawBitmap(offscreen, src, dst, bitmapPaint);
         } else {
-            // Circular: oldest is at snapColumn, newest is at snapColumn-1
-            // Draw two strips: [snapColumn..MAX_COLUMNS-1] then [0..snapColumn-1]
             int rightPart = MAX_COLUMNS - snapColumn;
             int leftW = (int) ((long) rightPart * viewW / MAX_COLUMNS);
-
             if (rightPart > 0) {
                 Rect src1 = new Rect(snapColumn, 0, MAX_COLUMNS, FREQ_BINS);
                 Rect dst1 = new Rect(0, 0, leftW, viewH);
@@ -208,6 +216,14 @@ public class SpectrogramView extends View {
                 canvas.drawBitmap(offscreen, src2, dst2, bitmapPaint);
             }
         }
+
+        // Draw cursor line
+        if (cursorFraction >= 0f) {
+            float cx = cursorFraction * viewW;
+            cursorPaint.setColor(0xFFFF0000);
+            cursorPaint.setStrokeWidth(3f);
+            canvas.drawLine(cx, 0, cx, viewH, cursorPaint);
+        }
     }
 
     public void setDbFloor(double floor) {
@@ -216,6 +232,66 @@ public class SpectrogramView extends View {
 
     public void setDbCeil(double ceil) {
         this.dbCeil = ceil;
+    }
+
+    /** Pre-compute full spectrogram for DAW playback mode. */
+    public void setFullSpectrogram(short[] pcm, int totalSamples) {
+        if (pcm == null || totalSamples <= 0) return;
+        synchronized (lock) {
+            offscreen.eraseColor(Color.BLACK);
+            currentColumn = 0;
+            wrapped = false;
+
+            // Divide PCM into MAX_COLUMNS windows
+            int windowStep = Math.max(1, totalSamples / MAX_COLUMNS);
+            double[] wr = new double[FFT_SIZE];
+            double[] wi = new double[FFT_SIZE];
+            int[] pr = new int[FREQ_BINS];
+            double floor = dbFloor;
+            double ceil = dbCeil;
+            double range = ceil - floor;
+            if (range < 1.0) range = 1.0;
+
+            int columns = Math.min(MAX_COLUMNS, totalSamples / (FFT_SIZE / 2));
+            for (int col = 0; col < columns; col++) {
+                int startSample = (int) ((long) col * totalSamples / columns);
+                // Fill FFT window
+                for (int i = 0; i < FFT_SIZE; i++) {
+                    int idx = startSample + i;
+                    wr[i] = (idx < totalSamples) ? pcm[idx] * hannWindow[i] : 0.0;
+                    wi[i] = 0.0;
+                }
+                fft(wr, wi, FFT_SIZE);
+                // Compute magnitudes
+                for (int k = 0; k < FREQ_BINS; k++) {
+                    double mag = Math.sqrt(wr[k] * wr[k] + wi[k] * wi[k]) / FFT_SIZE;
+                    double db = 20.0 * Math.log10(mag + 1e-10);
+                    double norm = (db - floor) / range;
+                    norm = Math.max(0.0, Math.min(1.0, norm));
+                    pr[FREQ_BINS - 1 - k] = heatmapColor(norm);
+                }
+                offscreen.setPixels(pr, 0, 1, col, 0, 1, FREQ_BINS);
+            }
+            currentColumn = columns;
+            if (columns >= MAX_COLUMNS) {
+                currentColumn = 0;
+                wrapped = true;
+            }
+            playbackMode = true;
+            cursorFraction = 0f;
+        }
+        postInvalidate();
+    }
+
+    public void setCursorPosition(float fraction) {
+        cursorFraction = fraction;
+        postInvalidate();
+    }
+
+    public void clearPlaybackMode() {
+        playbackMode = false;
+        cursorFraction = -1f;
+        clear();
     }
 
     public void clear() {

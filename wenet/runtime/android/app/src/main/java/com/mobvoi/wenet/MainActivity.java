@@ -93,6 +93,10 @@ public class MainActivity extends AppCompatActivity {
   private AutomaticGainControl agc = null;
   private final BlockingQueue<short[]> bufferQueue = new ArrayBlockingQueue<>(MAX_QUEUE_SIZE);
 
+  // Silero VAD
+  private SileroVad sileroVad;
+  private boolean useVad = false;
+
   // Bluetooth SCO
   private AudioManager audioManager;
   private boolean bluetoothScoOn = false;
@@ -242,6 +246,16 @@ public class MainActivity extends AppCompatActivity {
       assetsInit(this);
     } catch (IOException e) {
       Log.e(LOG_TAG, "Error process asset files to file path");
+    }
+
+    // Initialize Silero VAD
+    sileroVad = new SileroVad();
+    useVad = getSharedPreferences(PREFS_NAME, MODE_PRIVATE).getBoolean("vad_enabled", true);
+    if (useVad) {
+      if (!sileroVad.init(this)) {
+        Log.w(LOG_TAG, "Silero VAD init failed, disabling VAD");
+        useVad = false;
+      }
     }
 
     TextView textView = findViewById(R.id.textView);
@@ -419,6 +433,11 @@ public class MainActivity extends AppCompatActivity {
         useSpectrogram = "spectrogram".equals(vizType);
         updateVisualizationVisibility();
       }
+      // Reload VAD setting
+      useVad = getSharedPreferences(PREFS_NAME, MODE_PRIVATE).getBoolean("vad_enabled", true);
+      if (useVad && !sileroVad.isInitialized()) {
+        sileroVad.init(this);
+      }
     }
   }
 
@@ -478,6 +497,7 @@ public class MainActivity extends AppCompatActivity {
     super.onDestroy();
     stopPlayback();
     stopBluetoothMic();
+    if (sileroVad != null) { sileroVad.release(); }
     try { unregisterReceiver(scoReceiver); } catch (Exception ignored) {}
     try { audioManager.unregisterAudioDeviceCallback(audioDeviceCallback); } catch (Exception ignored) {}
   }
@@ -739,13 +759,39 @@ public class MainActivity extends AppCompatActivity {
 
   private void startAsrThread() {
     new Thread(() -> {
+      SileroVad.Callback vadCallback = new SileroVad.Callback() {
+        @Override
+        public void onSpeechChunk(short[] data, int length) {
+          if (length == data.length) {
+            Recognize.acceptWaveform(data);
+          } else {
+            short[] trimmed = new short[length];
+            System.arraycopy(data, 0, trimmed, 0, length);
+            Recognize.acceptWaveform(trimmed);
+          }
+        }
+        @Override
+        public void onSkippedSamples(int count) {
+          Recognize.addSkippedSamples(count);
+        }
+      };
+
+      // Reset VAD state for new recording
+      if (useVad && sileroVad.isInitialized()) {
+        sileroVad.reset();
+      }
+
       // Send all data — throttle setText (O(n) with text length)
       long lastUiUpdate = 0;
       final long UI_UPDATE_INTERVAL_MS = 500;
       while (startRecord || bufferQueue.size() > 0) {
         try {
           short[] data = bufferQueue.take();
-          Recognize.acceptWaveform(data);
+          if (useVad && sileroVad.isInitialized()) {
+            sileroVad.process(data, data.length, vadCallback);
+          } else {
+            Recognize.acceptWaveform(data);
+          }
           long now = System.currentTimeMillis();
           if (now - lastUiUpdate >= UI_UPDATE_INTERVAL_MS) {
             lastUiUpdate = now;
@@ -756,6 +802,13 @@ public class MainActivity extends AppCompatActivity {
           Log.e(LOG_TAG, e.getMessage());
         }
       }
+
+      // Flush remaining VAD buffers
+      if (useVad && sileroVad.isInitialized()) {
+        sileroVad.flush(vadCallback);
+        sileroVad.flushRemainingAsSkipped(vadCallback);
+      }
+
       // Final UI update after loop ends
       final String finalDisplay = buildLiveDisplay();
       runOnUiThread(() -> updateResultAndScroll(finalDisplay));
@@ -993,6 +1046,57 @@ public class MainActivity extends AppCompatActivity {
     // Build karaoke text once, then highlight
     buildKaraokeText();
     updateKaraokeHighlight(0);
+
+    // Load full PCM for DAW visualization
+    loadFullVisualization(audioPath);
+  }
+
+  private void loadFullVisualization(String audioPath) {
+    try {
+      File f = new File(audioPath);
+      if (!f.exists() || f.length() == 0) return;
+      byte[] pcmBytes = new byte[(int) f.length()];
+      FileInputStream fis = new FileInputStream(f);
+      fis.read(pcmBytes);
+      fis.close();
+      int totalSamples = pcmBytes.length / 2;
+      short[] pcmShorts = new short[totalSamples];
+      java.nio.ByteBuffer.wrap(pcmBytes).order(java.nio.ByteOrder.LITTLE_ENDIAN)
+          .asShortBuffer().get(pcmShorts);
+
+      if (useSpectrogram) {
+        SpectrogramView sv = findViewById(R.id.spectrogramView);
+        sv.setFullSpectrogram(pcmShorts, totalSamples);
+      } else {
+        // Compute energy bars
+        int barCount = 50;
+        double[] energies = new double[barCount];
+        int samplesPerBar = totalSamples / barCount;
+        double maxDb = -999;
+        double[] rawDb = new double[barCount];
+        for (int i = 0; i < barCount; i++) {
+          double sum = 0;
+          int start = i * samplesPerBar;
+          int end = Math.min(start + samplesPerBar, totalSamples);
+          for (int j = start; j < end; j++) {
+            sum += pcmShorts[j] * pcmShorts[j];
+          }
+          double rms = Math.sqrt(sum / (end - start));
+          double db = 20.0 * Math.log10(rms + 1e-10);
+          rawDb[i] = db;
+          if (db > maxDb) maxDb = db;
+        }
+        // Normalize to 0~1
+        double floor = maxDb - 60; // 60dB dynamic range
+        for (int i = 0; i < barCount; i++) {
+          energies[i] = Math.max(0, Math.min(1.0, (rawDb[i] - floor) / (maxDb - floor)));
+        }
+        VoiceRectView vv = findViewById(R.id.voiceRectView);
+        vv.setFullWaveform(energies);
+      }
+    } catch (Exception e) {
+      Log.e(LOG_TAG, "Error loading full visualization: " + e.getMessage());
+    }
   }
 
   private List<WordSpan> loadWordSpans(String recordingName) {
@@ -1106,19 +1210,6 @@ public class MainActivity extends AppCompatActivity {
             pos += written;
             if (isPlaying) {
               playbackPositionBytes = pos;
-              // Feed visualization
-              int samplesRead = bytesRead / 2;
-              short[] samples = new short[samplesRead];
-              java.nio.ByteBuffer.wrap(chunk, 0, bytesRead)
-                  .order(java.nio.ByteOrder.LITTLE_ENDIAN).asShortBuffer()
-                  .get(samples, 0, samplesRead);
-              if (useSpectrogram) {
-                ((SpectrogramView) findViewById(R.id.spectrogramView))
-                    .addSamples(samples, samplesRead);
-              } else {
-                ((VoiceRectView) findViewById(R.id.voiceRectView))
-                    .add(calculateDb(samples));
-              }
             }
           } else {
             break;
@@ -1189,6 +1280,9 @@ public class MainActivity extends AppCompatActivity {
     playbackPositionBytes = 0;
     playbackAudioPath = null;
     pcmFileLength = 0;
+    // Clear DAW visualization
+    ((VoiceRectView) findViewById(R.id.voiceRectView)).clearPlaybackMode();
+    ((SpectrogramView) findViewById(R.id.spectrogramView)).clearPlaybackMode();
   }
 
   private void seekToMs(int ms) {
@@ -1204,6 +1298,7 @@ public class MainActivity extends AppCompatActivity {
     playbackPositionBytes = bytePos;
     updatePlaybackUI(ms);
     updateKaraokeHighlight(ms);
+    updateVisualizationCursor(ms);
     if (wasPlaying) {
       resumePlayback();
     }
@@ -1219,6 +1314,7 @@ public class MainActivity extends AppCompatActivity {
           ms = bytesToMs(playbackPositionBytes);
           updatePlaybackUI(ms);
           updateKaraokeHighlight(ms);
+          updateVisualizationCursor(ms);
           uiHandler.postDelayed(this, PLAYBACK_UPDATE_MS);
         }
       }
@@ -1230,6 +1326,17 @@ public class MainActivity extends AppCompatActivity {
     if (playbackUpdater != null) {
       uiHandler.removeCallbacks(playbackUpdater);
       playbackUpdater = null;
+    }
+  }
+
+  private void updateVisualizationCursor(int currentMs) {
+    SeekBar seekBar = findViewById(R.id.seekBar);
+    int durationMs = seekBar.getMax();
+    float fraction = (durationMs > 0) ? (float) currentMs / durationMs : 0f;
+    if (useSpectrogram) {
+      ((SpectrogramView) findViewById(R.id.spectrogramView)).setCursorPosition(fraction);
+    } else {
+      ((VoiceRectView) findViewById(R.id.voiceRectView)).setCursorPosition(fraction);
     }
   }
 

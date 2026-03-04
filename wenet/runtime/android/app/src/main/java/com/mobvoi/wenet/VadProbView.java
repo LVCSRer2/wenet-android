@@ -13,11 +13,14 @@ import android.view.View;
 public class VadProbView extends View {
 
     private static final int BAR_COUNT = 200;
+    private static final int SAMPLES_PER_BAR = 512;  // match SpectrogramView FFT_SIZE
     private static final int REDRAW_INTERVAL_MS = 100;
     private float speechThreshold = 0.5f;
     private float silenceThreshold = 0.3f;
 
     private final float[] probBuffer = new float[BAR_COUNT];
+    private float currentProb = 0f;
+    private int sampleAccum = 0;
     private final Paint barPaint = new Paint();
     private final Paint linePaint = new Paint();
     private final Paint bgPaint = new Paint();
@@ -57,6 +60,20 @@ public class VadProbView extends View {
         cursorPaint.setStrokeWidth(3f);
     }
 
+    public void setCurrentProb(float prob) {
+        this.currentProb = prob;
+    }
+
+    /** Sample-count based advancement: adds bars at SAMPLES_PER_BAR rate. */
+    public void addSamples(int numSamples) {
+        sampleAccum += numSamples;
+        while (sampleAccum >= SAMPLES_PER_BAR) {
+            System.arraycopy(probBuffer, 1, probBuffer, 0, BAR_COUNT - 1);
+            probBuffer[BAR_COUNT - 1] = currentProb;
+            sampleAccum -= SAMPLES_PER_BAR;
+        }
+    }
+
     public void addProb(float prob) {
         System.arraycopy(probBuffer, 1, probBuffer, 0, BAR_COUNT - 1);
         probBuffer[BAR_COUNT - 1] = prob;
@@ -64,6 +81,8 @@ public class VadProbView extends View {
 
     public void zero() {
         java.util.Arrays.fill(probBuffer, 0f);
+        sampleAccum = 0;
+        currentProb = 0f;
     }
 
     /** Set full probability data for DAW playback mode. */

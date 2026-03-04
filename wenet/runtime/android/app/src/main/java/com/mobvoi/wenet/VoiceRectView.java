@@ -16,6 +16,7 @@ import java.util.Arrays;
  */
 public class VoiceRectView extends View {
 
+  private static final int SAMPLES_PER_BAR = 512;  // match SpectrogramView FFT_SIZE
   // 音频矩形的数量
   private int mRectCount;
   // 音频矩形的画笔
@@ -30,6 +31,11 @@ public class VoiceRectView extends View {
   private int mSpeed;
 
   private double[] mEnergyBuffer = null;
+
+  // Sample-based accumulation for sync with spectrogram/VAD views
+  private double sampleEnergyAccum = 0;
+  private int sampleCount = 0;
+  private int sampleAccum = 0;
 
   // DAW playback mode
   private boolean playbackMode = false;
@@ -108,8 +114,29 @@ public class VoiceRectView extends View {
     mEnergyBuffer[mEnergyBuffer.length - 1] = energy;
   }
 
+  /** Sample-count based: accumulates 512 samples per bar, matching SpectrogramView. */
+  public void addSamples(short[] data, int length) {
+    for (int i = 0; i < length; i++) {
+      sampleEnergyAccum += (double) data[i] * data[i];
+      sampleCount++;
+      sampleAccum++;
+      if (sampleAccum >= SAMPLES_PER_BAR) {
+        double avgEnergy = sampleEnergyAccum / sampleCount;
+        double db = (10 * Math.log10(1 + avgEnergy)) / 200;
+        db = Math.min(db, 1.0);
+        add(db);
+        sampleEnergyAccum = 0;
+        sampleCount = 0;
+        sampleAccum = 0;
+      }
+    }
+  }
+
   public void zero() {
     Arrays.fill(mEnergyBuffer, 0);
+    sampleEnergyAccum = 0;
+    sampleCount = 0;
+    sampleAccum = 0;
   }
 
   /** Set full waveform for DAW playback mode. */

@@ -74,7 +74,7 @@
         android:id="@+id/voiceRectView"
         android:layout_width="match_parent"
         android:layout_height="match_parent"
-        VoiceRect:RectCount="50"
+        VoiceRect:RectCount="200"
         VoiceRect:RectDownColor="@color/green"
         VoiceRect:RectOffset="0"
         VoiceRect:RectSpeed="300"

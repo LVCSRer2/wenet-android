@@ -662,22 +662,13 @@ public class MainActivity extends AppCompatActivity {
 
   private void startRecordThread() {
     new Thread(() -> {
-      VoiceRectView voiceView = findViewById(R.id.voiceRectView);
-      SpectrogramView spectrogramView = findViewById(R.id.spectrogramView);
       record.startRecording();
       Process.setThreadPriority(Process.THREAD_PRIORITY_AUDIO);
       short[] buffer = new short[miniBufferSize / 2];
       byte[] pcmBytes = new byte[miniBufferSize]; // pre-allocate for PCM write
       while (startRecord) {
         int read = record.read(buffer, 0, buffer.length);
-        if (read > 0) {
-          if (useSpectrogram) {
-            spectrogramView.addSamples(buffer, read);
-          } else {
-            voiceView.add(calculateDb(buffer));
-          }
-        }
-        if (AudioRecord.ERROR_INVALID_OPERATION != read) {
+        if (AudioRecord.ERROR_INVALID_OPERATION != read && read > 0) {
           // Save PCM to file
           if (pcmOutputStream != null) {
             try {
@@ -704,9 +695,9 @@ public class MainActivity extends AppCompatActivity {
       releaseAudioEffects();
       stopBluetoothMic();
       if (useSpectrogram) {
-        spectrogramView.clear();
+        ((SpectrogramView) findViewById(R.id.spectrogramView)).clear();
       } else {
-        voiceView.zero();
+        ((VoiceRectView) findViewById(R.id.voiceRectView)).zero();
       }
       ((VadProbView) findViewById(R.id.vadProbView)).zero();
       // Close PCM file
@@ -805,12 +796,20 @@ public class MainActivity extends AppCompatActivity {
       while (startRecord || bufferQueue.size() > 0) {
         try {
           short[] data = bufferQueue.take();
+          // VAD processing first (to get prob before visualization)
           if (useVad && sileroVad.isInitialized()) {
             sileroVad.process(data, data.length, vadCallback);
-            ((VadProbView) findViewById(R.id.vadProbView)).addProb(sileroVad.getLastProb());
+            ((VadProbView) findViewById(R.id.vadProbView)).setCurrentProb(sileroVad.getLastProb());
           } else {
             Recognize.acceptWaveform(data);
           }
+          // Feed all visualizations with same sample count for sync
+          if (useSpectrogram) {
+            ((SpectrogramView) findViewById(R.id.spectrogramView)).addSamples(data, data.length);
+          } else {
+            ((VoiceRectView) findViewById(R.id.voiceRectView)).addSamples(data, data.length);
+          }
+          ((VadProbView) findViewById(R.id.vadProbView)).addSamples(data.length);
           long now = System.currentTimeMillis();
           if (now - lastUiUpdate >= UI_UPDATE_INTERVAL_MS) {
             lastUiUpdate = now;

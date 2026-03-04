@@ -772,9 +772,15 @@ public class MainActivity extends AppCompatActivity {
 
   private void startAsrThread() {
     new Thread(() -> {
+      // Track whether we need to snapshot offset before next speech chunk
+      final boolean[] needSnapshot = {true};  // true at start (initial segment)
       SileroVad.Callback vadCallback = new SileroVad.Callback() {
         @Override
         public void onSpeechChunk(short[] data, int length) {
+          if (needSnapshot[0]) {
+            Recognize.snapshotOffset();
+            needSnapshot[0] = false;
+          }
           if (length == data.length) {
             Recognize.acceptWaveform(data);
           } else {
@@ -786,6 +792,7 @@ public class MainActivity extends AppCompatActivity {
         @Override
         public void onSkippedSamples(int count) {
           Recognize.addSkippedSamples(count);
+          needSnapshot[0] = true;  // next speech chunk starts a new segment
         }
       };
 
@@ -1252,11 +1259,13 @@ public class MainActivity extends AppCompatActivity {
           ppBtn.setText("Play");
           updatePlaybackUI(0);
           updateKaraokeHighlight(0);
+          // Reset cursor to start, keep visualization intact
           if (useSpectrogram) {
-            ((SpectrogramView) findViewById(R.id.spectrogramView)).clear();
+            ((SpectrogramView) findViewById(R.id.spectrogramView)).setCursorPosition(0f);
           } else {
-            ((VoiceRectView) findViewById(R.id.voiceRectView)).zero();
+            ((VoiceRectView) findViewById(R.id.voiceRectView)).setCursorPosition(0f);
           }
+          ((VadProbView) findViewById(R.id.vadProbView)).setCursorPosition(0f);
         });
       }
     });

@@ -17,4 +17,5 @@ public class Recognize {
   public static native String getTimedResultDelta();
   public static native String getResultDelta();
   public static native void addSkippedSamples(int count);
+  public static native void snapshotOffset();
 }

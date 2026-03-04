@@ -14,7 +14,9 @@
 #include <jni.h>
 #include <atomic>
 #include <cstdio>
+#include <mutex>
 #include <thread>
+#include <vector>
 
 #include "decoder/asr_decoder.h"
 #if defined(USE_ONNX) || defined(USE_NNAPI)
@@ -45,6 +47,16 @@ size_t timed_result_sent_pos = 0;  // position already sent to Java
 std::string total_result_sent;  // total_result already sent to Java
 int total_samples = 0;
 int endpoint_start_sample = 0;
+int skipped_samples_offset = 0;  // cumulative skipped samples (ASR thread writes)
+int total_fed_samples = 0;       // total samples fed to feature pipeline
+// Offset map: records (pipeline_ms, cumulative_skip_samples) at each segment start.
+// Decode thread looks up correct offset per word_piece timestamp.
+struct OffsetEntry {
+  int pipeline_ms;
+  int skip_samples;
+};
+std::mutex offset_map_mutex;
+std::vector<OffsetEntry> offset_map;
 const int kSampleRate = 8000;
 
 // Format samples to "MM:SS.S"
@@ -118,6 +130,12 @@ void reset(JNIEnv* env, jobject) {
   total_result_sent = "";
   total_samples = 0;
   endpoint_start_sample = 0;
+  skipped_samples_offset = 0;
+  total_fed_samples = 0;
+  {
+    std::lock_guard<std::mutex> lock(offset_map_mutex);
+    offset_map.clear();
+  }
 }
 
 void accept_waveform(JNIEnv* env, jobject, jshortArray jWaveform) {
@@ -125,11 +143,24 @@ void accept_waveform(JNIEnv* env, jobject, jshortArray jWaveform) {
   int16_t* waveform = env->GetShortArrayElements(jWaveform, 0);
   feature_pipeline->AcceptWaveform(waveform, size);
   total_samples += size;
+  total_fed_samples += size;
   LOG(INFO) << "wenet accept waveform in ms: " << int(size / 8);
 }
 
 void add_skipped_samples(JNIEnv*, jobject, jint count) {
   total_samples += count;
+  skipped_samples_offset += count;
+}
+
+// Called from Java before first acceptWaveform of a new speech segment.
+// Records the pipeline position and cumulative skip offset for timestamp correction.
+void snapshot_offset(JNIEnv*, jobject) {
+  std::lock_guard<std::mutex> lock(offset_map_mutex);
+  int pipeline_ms = total_fed_samples * 1000 / kSampleRate;
+  offset_map.push_back({pipeline_ms, skipped_samples_offset});
+  LOG(INFO) << "wenet snapshot_offset: pipeline_ms=" << pipeline_ms
+            << " skip_samples=" << skipped_samples_offset
+            << " map_size=" << offset_map.size();
 }
 
 void set_input_finished() {
@@ -154,17 +185,37 @@ std::string JsonEscape(const std::string& s) {
   return out;
 }
 
+// Look up the correct skip offset (in ms) for a given pipeline timestamp.
+// Finds the last offset_map entry where pipeline_ms <= the word's timestamp.
+int LookupOffsetMs(int word_pipeline_ms) {
+  std::lock_guard<std::mutex> lock(offset_map_mutex);
+  int offset_samples = 0;
+  for (const auto& entry : offset_map) {
+    if (entry.pipeline_ms <= word_pipeline_ms) {
+      offset_samples = entry.skip_samples;
+    } else {
+      break;
+    }
+  }
+  return offset_samples * 1000 / kSampleRate;
+}
+
 void AppendWordPiecesToJson(const std::vector<WordPiece>& pieces) {
   for (const auto& wp : pieces) {
     if (!timed_result_json.empty()) {
       timed_result_json += ",";
     }
+    int offset_ms = LookupOffsetMs(wp.start);
+    int adjusted_start = wp.start + offset_ms;
+    int adjusted_end = wp.end + offset_ms;
     char buf[256];
     snprintf(buf, sizeof(buf), R"({"w":"%s","s":%d,"e":%d})",
-             JsonEscape(wp.word).c_str(), wp.start, wp.end);
+             JsonEscape(wp.word).c_str(), adjusted_start, adjusted_end);
     timed_result_json += buf;
     LOG(INFO) << "word_piece: " << wp.word
-              << " start=" << wp.start << " end=" << wp.end;
+              << " raw_start=" << wp.start << " raw_end=" << wp.end
+              << " offset_ms=" << offset_ms
+              << " adj_start=" << adjusted_start << " adj_end=" << adjusted_end;
   }
 }
 
@@ -319,6 +370,8 @@ JNIEXPORT jint JNI_OnLoad(JavaVM* vm, void*) {
        reinterpret_cast<void*>(wenet::get_result_delta)},
       {"addSkippedSamples", "(I)V",
        reinterpret_cast<void*>(wenet::add_skipped_samples)},
+      {"snapshotOffset", "()V",
+       reinterpret_cast<void*>(wenet::snapshot_offset)},
   };
   int rc = env->RegisterNatives(c, methods,
                                 sizeof(methods) / sizeof(JNINativeMethod));

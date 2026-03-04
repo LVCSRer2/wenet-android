@@ -250,6 +250,7 @@ public class MainActivity extends AppCompatActivity {
 
     // Initialize Silero VAD
     sileroVad = new SileroVad();
+    configureVadFromPrefs();
     useVad = getSharedPreferences(PREFS_NAME, MODE_PRIVATE).getBoolean("vad_enabled", true);
     if (useVad) {
       if (!sileroVad.init(this)) {
@@ -434,6 +435,7 @@ public class MainActivity extends AppCompatActivity {
         updateVisualizationVisibility();
       }
       // Reload VAD setting
+      configureVadFromPrefs();
       useVad = getSharedPreferences(PREFS_NAME, MODE_PRIVATE).getBoolean("vad_enabled", true);
       if (useVad && !sileroVad.isInitialized()) {
         sileroVad.init(this);
@@ -706,6 +708,7 @@ public class MainActivity extends AppCompatActivity {
       } else {
         voiceView.zero();
       }
+      ((VadProbView) findViewById(R.id.vadProbView)).zero();
       // Close PCM file
       if (pcmOutputStream != null) {
         try {
@@ -728,6 +731,21 @@ public class MainActivity extends AppCompatActivity {
     energy = (10 * Math.log10(1 + energy)) / 200;
     energy = Math.min(energy, 1.0);
     return energy;
+  }
+
+  private void configureVadFromPrefs() {
+    android.content.SharedPreferences prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE);
+    int thresholdProgress = prefs.getInt("vad_threshold", 40);
+    float threshold = (thresholdProgress + 10) / 100f;
+    sileroVad.setSpeechThreshold(threshold);
+
+    int preBufferProgress = prefs.getInt("vad_prebuffer", 8);
+    int preBufferChunks = preBufferProgress + 2;
+    sileroVad.setPreBufferSlots(preBufferChunks);
+
+    // Sync thresholds to VadProbView
+    float silenceThreshold = Math.max(0.05f, threshold - 0.2f);
+    ((VadProbView) findViewById(R.id.vadProbView)).setThresholds(threshold, silenceThreshold);
   }
 
   private void updateVisualizationVisibility() {
@@ -789,6 +807,7 @@ public class MainActivity extends AppCompatActivity {
           short[] data = bufferQueue.take();
           if (useVad && sileroVad.isInitialized()) {
             sileroVad.process(data, data.length, vadCallback);
+            ((VadProbView) findViewById(R.id.vadProbView)).addProb(sileroVad.getLastProb());
           } else {
             Recognize.acceptWaveform(data);
           }
@@ -1283,6 +1302,7 @@ public class MainActivity extends AppCompatActivity {
     // Clear DAW visualization
     ((VoiceRectView) findViewById(R.id.voiceRectView)).clearPlaybackMode();
     ((SpectrogramView) findViewById(R.id.spectrogramView)).clearPlaybackMode();
+    ((VadProbView) findViewById(R.id.vadProbView)).clearPlaybackMode();
   }
 
   private void seekToMs(int ms) {

@@ -52,15 +52,23 @@
 
     </FrameLayout>
 
+    <com.mobvoi.wenet.VadProbView
+      android:id="@+id/vadProbView"
+      android:layout_width="0dp"
+      android:layout_height="0dp"
+      app:layout_constraintHeight_percent="0.03"
+      app:layout_constraintBottom_toTopOf="@+id/visualizationContainer"
+      app:layout_constraintEnd_toEndOf="parent"
+      app:layout_constraintStart_toStartOf="parent" />
+
     <FrameLayout
       android:id="@+id/visualizationContainer"
       android:layout_width="0dp"
       android:layout_height="0dp"
-      app:layout_constraintHeight_percent="0.15"
+      app:layout_constraintHeight_percent="0.12"
       app:layout_constraintBottom_toTopOf="@+id/playbackLayout"
       app:layout_constraintEnd_toEndOf="parent"
-      app:layout_constraintStart_toStartOf="parent"
-      app:layout_constraintTop_toBottomOf="@+id/textView">
+      app:layout_constraintStart_toStartOf="parent">
 
       <com.mobvoi.wenet.VoiceRectView
         android:id="@+id/voiceRectView"

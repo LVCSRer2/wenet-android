@@ -8,6 +8,8 @@ import android.widget.CheckBox;
 import android.widget.EditText;
 import android.widget.RadioButton;
 import android.widget.RadioGroup;
+import android.widget.SeekBar;
+import android.widget.TextView;
 import android.widget.Toast;
 import androidx.appcompat.app.AppCompatActivity;
 
@@ -23,6 +25,8 @@ public class SettingsActivity extends AppCompatActivity {
     private static final String KEY_NS = "audio_ns";
     private static final String KEY_AGC = "audio_agc";
     private static final String KEY_VAD = "vad_enabled";
+    private static final String KEY_VAD_THRESHOLD = "vad_threshold";
+    private static final String KEY_VAD_PREBUFFER = "vad_prebuffer";
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -82,6 +86,40 @@ public class SettingsActivity extends AppCompatActivity {
         CheckBox checkVad = findViewById(R.id.checkVad);
         checkVad.setChecked(prefs.getBoolean(KEY_VAD, true));
 
+        // VAD Threshold: SeekBar 0~80 → 0.10~0.90
+        SeekBar vadThresholdSeekBar = findViewById(R.id.vadThresholdSeekBar);
+        TextView vadThresholdLabel = findViewById(R.id.vadThresholdLabel);
+        int savedThresholdProgress = prefs.getInt(KEY_VAD_THRESHOLD, 40); // default 0.50
+        vadThresholdSeekBar.setProgress(savedThresholdProgress);
+        float initThreshold = (savedThresholdProgress + 10) / 100f;
+        vadThresholdLabel.setText(String.format("Speech Threshold: %.2f", initThreshold));
+        vadThresholdSeekBar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+            @Override public void onProgressChanged(SeekBar sb, int progress, boolean fromUser) {
+                float val = (progress + 10) / 100f;
+                vadThresholdLabel.setText(String.format("Speech Threshold: %.2f", val));
+            }
+            @Override public void onStartTrackingTouch(SeekBar sb) {}
+            @Override public void onStopTrackingTouch(SeekBar sb) {}
+        });
+
+        // VAD Pre-buffer: SeekBar 0~18 → 2~20 chunks
+        SeekBar vadPreBufferSeekBar = findViewById(R.id.vadPreBufferSeekBar);
+        TextView vadPreBufferLabel = findViewById(R.id.vadPreBufferLabel);
+        int savedPreBufferProgress = prefs.getInt(KEY_VAD_PREBUFFER, 8); // default 10 chunks
+        vadPreBufferSeekBar.setProgress(savedPreBufferProgress);
+        int initChunks = savedPreBufferProgress + 2;
+        int initMs = initChunks * 256 * 1000 / 8000;
+        vadPreBufferLabel.setText(String.format("Pre-buffer: %d chunks (%dms)", initChunks, initMs));
+        vadPreBufferSeekBar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+            @Override public void onProgressChanged(SeekBar sb, int progress, boolean fromUser) {
+                int chunks = progress + 2;
+                int ms = chunks * 256 * 1000 / 8000;
+                vadPreBufferLabel.setText(String.format("Pre-buffer: %d chunks (%dms)", chunks, ms));
+            }
+            @Override public void onStartTrackingTouch(SeekBar sb) {}
+            @Override public void onStopTrackingTouch(SeekBar sb) {}
+        });
+
         Button saveButton = findViewById(R.id.saveButton);
         saveButton.setOnClickListener(v -> {
             String url = urlEditText.getText().toString().trim();
@@ -112,6 +150,8 @@ public class SettingsActivity extends AppCompatActivity {
             prefs.edit().putBoolean(KEY_NS, checkNs.isChecked()).apply();
             prefs.edit().putBoolean(KEY_AGC, checkAgc.isChecked()).apply();
             prefs.edit().putBoolean(KEY_VAD, checkVad.isChecked()).apply();
+            prefs.edit().putInt(KEY_VAD_THRESHOLD, vadThresholdSeekBar.getProgress()).apply();
+            prefs.edit().putInt(KEY_VAD_PREBUFFER, vadPreBufferSeekBar.getProgress()).apply();
 
             Intent result = new Intent();
             boolean changed = false;

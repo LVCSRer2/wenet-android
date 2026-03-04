@@ -20,10 +20,12 @@ public class SileroVad {
     private static final String TAG = "SileroVad";
     private static final int CHUNK_SIZE = 256;  // 256 samples = 32ms at 8kHz
     private static final int SAMPLE_RATE = 8000;
-    private static final float SPEECH_THRESHOLD = 0.5f;
-    private static final float SILENCE_THRESHOLD = 0.3f;
     private static final int TRAILING_SILENCE_CHUNKS = 10;  // ~320ms
-    private static final int PRE_BUFFER_SLOTS = 6;  // ~192ms
+
+    // Configurable parameters
+    private float speechThreshold = 0.5f;
+    private float silenceThreshold = 0.3f;
+    private int preBufferSlots = 10;  // ~320ms
 
     public interface Callback {
         void onSpeechChunk(short[] data, int length);
@@ -38,15 +40,33 @@ public class SileroVad {
     private State vadState = State.IDLE;
     private int trailingSilenceCount = 0;
     private boolean initialized = false;
+    private volatile float lastProb = 0f;
 
     // Pre-buffer: ring buffer of CHUNK_SIZE chunks
-    private short[][] preBuffer = new short[PRE_BUFFER_SLOTS][];
+    private short[][] preBuffer;
     private int preBufferHead = 0;  // next write position
     private int preBufferCount = 0; // current number of chunks in buffer
 
     // Residual buffer for incomplete chunks
     private short[] residual = new short[CHUNK_SIZE];
     private int residualLen = 0;
+
+    public void setSpeechThreshold(float threshold) {
+        this.speechThreshold = threshold;
+        this.silenceThreshold = Math.max(0.05f, threshold - 0.2f);
+    }
+
+    public float getSpeechThreshold() {
+        return speechThreshold;
+    }
+
+    public void setPreBufferSlots(int slots) {
+        this.preBufferSlots = Math.max(1, slots);
+    }
+
+    public int getPreBufferSlots() {
+        return preBufferSlots;
+    }
 
     public boolean init(Context context) {
         try {
@@ -67,13 +87,16 @@ public class SileroVad {
 
             // Initialize state: [2][128] zeros
             state = new float[2][128];
+            preBuffer = new short[preBufferSlots][];
             vadState = State.IDLE;
             trailingSilenceCount = 0;
             preBufferHead = 0;
             preBufferCount = 0;
             residualLen = 0;
             initialized = true;
-            Log.i(TAG, "Silero VAD initialized successfully");
+            Log.i(TAG, "Silero VAD initialized: threshold=" + speechThreshold
+                    + " preBuffer=" + preBufferSlots + " chunks ("
+                    + (preBufferSlots * CHUNK_SIZE * 1000 / SAMPLE_RATE) + "ms)");
             return true;
         } catch (Exception e) {
             Log.e(TAG, "Failed to initialize Silero VAD: " + e.getMessage());
@@ -124,12 +147,17 @@ public class SileroVad {
         }
     }
 
+    public float getLastProb() {
+        return lastProb;
+    }
+
     private void processChunk(short[] chunk, Callback callback) {
         float prob = infer(chunk);
+        lastProb = prob;
 
         switch (vadState) {
             case IDLE:
-                if (prob >= SPEECH_THRESHOLD) {
+                if (prob >= speechThreshold) {
                     // Flush pre-buffer as speech
                     flushPreBuffer(callback);
                     callback.onSpeechChunk(chunk, chunk.length);
@@ -140,7 +168,7 @@ public class SileroVad {
                 break;
 
             case SPEAKING:
-                if (prob < SILENCE_THRESHOLD) {
+                if (prob < silenceThreshold) {
                     callback.onSpeechChunk(chunk, chunk.length);
                     vadState = State.TRAILING_SILENCE;
                     trailingSilenceCount = 1;
@@ -150,7 +178,7 @@ public class SileroVad {
                 break;
 
             case TRAILING_SILENCE:
-                if (prob >= SPEECH_THRESHOLD) {
+                if (prob >= speechThreshold) {
                     callback.onSpeechChunk(chunk, chunk.length);
                     vadState = State.SPEAKING;
                     trailingSilenceCount = 0;
@@ -167,13 +195,13 @@ public class SileroVad {
     }
 
     private void addToPreBuffer(short[] chunk, Callback callback) {
-        if (preBufferCount == PRE_BUFFER_SLOTS) {
+        if (preBufferCount == preBufferSlots) {
             // Evict oldest chunk as skipped
             callback.onSkippedSamples(preBuffer[preBufferHead].length);
         }
         preBuffer[preBufferHead] = chunk;
-        preBufferHead = (preBufferHead + 1) % PRE_BUFFER_SLOTS;
-        if (preBufferCount < PRE_BUFFER_SLOTS) {
+        preBufferHead = (preBufferHead + 1) % preBufferSlots;
+        if (preBufferCount < preBufferSlots) {
             preBufferCount++;
         }
     }
@@ -181,9 +209,9 @@ public class SileroVad {
     private void flushPreBuffer(Callback callback) {
         if (preBufferCount == 0) return;
         // Read from oldest to newest
-        int start = (preBufferHead - preBufferCount + PRE_BUFFER_SLOTS) % PRE_BUFFER_SLOTS;
+        int start = (preBufferHead - preBufferCount + preBufferSlots) % preBufferSlots;
         for (int i = 0; i < preBufferCount; i++) {
-            int idx = (start + i) % PRE_BUFFER_SLOTS;
+            int idx = (start + i) % preBufferSlots;
             callback.onSpeechChunk(preBuffer[idx], preBuffer[idx].length);
         }
         preBufferCount = 0;
@@ -268,9 +296,9 @@ public class SileroVad {
     public void flushRemainingAsSkipped(Callback callback) {
         if (!initialized) return;
         if (vadState == State.IDLE && preBufferCount > 0) {
-            int start = (preBufferHead - preBufferCount + PRE_BUFFER_SLOTS) % PRE_BUFFER_SLOTS;
+            int start = (preBufferHead - preBufferCount + preBufferSlots) % preBufferSlots;
             for (int i = 0; i < preBufferCount; i++) {
-                int idx = (start + i) % PRE_BUFFER_SLOTS;
+                int idx = (start + i) % preBufferSlots;
                 callback.onSkippedSamples(preBuffer[idx].length);
             }
             preBufferCount = 0;
@@ -281,11 +309,13 @@ public class SileroVad {
     public void reset() {
         if (!initialized) return;
         state = new float[2][128];
+        preBuffer = new short[preBufferSlots][];
         vadState = State.IDLE;
         trailingSilenceCount = 0;
         preBufferHead = 0;
         preBufferCount = 0;
         residualLen = 0;
+        lastProb = 0f;
     }
 
     public void release() {

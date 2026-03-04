@@ -154,7 +154,37 @@
         android:id="@+id/checkVad"
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
-        android:text="VAD (Voice Activity Detection)"
+        android:text="VAD (Voice Activity Detection)" />
+
+    <TextView
+        android:id="@+id/vadThresholdLabel"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="Speech Threshold: 0.50"
+        android:textSize="13sp"
+        android:layout_marginTop="4dp" />
+
+    <SeekBar
+        android:id="@+id/vadThresholdSeekBar"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:max="80"
+        android:progress="40" />
+
+    <TextView
+        android:id="@+id/vadPreBufferLabel"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="Pre-buffer: 6 chunks (192ms)"
+        android:textSize="13sp"
+        android:layout_marginTop="4dp" />
+
+    <SeekBar
+        android:id="@+id/vadPreBufferSeekBar"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:max="18"
+        android:progress="8"
         android:layout_marginBottom="24dp" />
 
     <TextView

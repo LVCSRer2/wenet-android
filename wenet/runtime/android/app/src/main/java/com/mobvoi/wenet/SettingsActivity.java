@@ -27,6 +27,7 @@ public class SettingsActivity extends AppCompatActivity {
     private static final String KEY_VAD = "vad_enabled";
     private static final String KEY_VAD_THRESHOLD = "vad_threshold";
     private static final String KEY_VAD_PREBUFFER = "vad_prebuffer";
+    private static final String KEY_VAD_TRAILING = "vad_trailing";
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -120,6 +121,24 @@ public class SettingsActivity extends AppCompatActivity {
             @Override public void onStopTrackingTouch(SeekBar sb) {}
         });
 
+        // VAD Trailing Silence: SeekBar 0~35 → 5~40 chunks
+        SeekBar vadTrailingSilenceSeekBar = findViewById(R.id.vadTrailingSilenceSeekBar);
+        TextView vadTrailingSilenceLabel = findViewById(R.id.vadTrailingSilenceLabel);
+        int savedTrailingProgress = prefs.getInt(KEY_VAD_TRAILING, 20); // default 25 chunks
+        vadTrailingSilenceSeekBar.setProgress(savedTrailingProgress);
+        int initTrailing = savedTrailingProgress + 5;
+        int initTrailingMs = initTrailing * 256 * 1000 / 8000;
+        vadTrailingSilenceLabel.setText(String.format("Trailing Silence: %d chunks (%dms)", initTrailing, initTrailingMs));
+        vadTrailingSilenceSeekBar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+            @Override public void onProgressChanged(SeekBar sb, int progress, boolean fromUser) {
+                int chunks = progress + 5;
+                int ms = chunks * 256 * 1000 / 8000;
+                vadTrailingSilenceLabel.setText(String.format("Trailing Silence: %d chunks (%dms)", chunks, ms));
+            }
+            @Override public void onStartTrackingTouch(SeekBar sb) {}
+            @Override public void onStopTrackingTouch(SeekBar sb) {}
+        });
+
         Button saveButton = findViewById(R.id.saveButton);
         saveButton.setOnClickListener(v -> {
             String url = urlEditText.getText().toString().trim();
@@ -152,6 +171,7 @@ public class SettingsActivity extends AppCompatActivity {
             prefs.edit().putBoolean(KEY_VAD, checkVad.isChecked()).apply();
             prefs.edit().putInt(KEY_VAD_THRESHOLD, vadThresholdSeekBar.getProgress()).apply();
             prefs.edit().putInt(KEY_VAD_PREBUFFER, vadPreBufferSeekBar.getProgress()).apply();
+            prefs.edit().putInt(KEY_VAD_TRAILING, vadTrailingSilenceSeekBar.getProgress()).apply();
 
             Intent result = new Intent();
             boolean changed = false;

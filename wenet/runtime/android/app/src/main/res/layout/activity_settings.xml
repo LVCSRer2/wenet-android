@@ -184,7 +184,22 @@
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:max="18"
-        android:progress="8"
+        android:progress="8" />
+
+    <TextView
+        android:id="@+id/vadTrailingSilenceLabel"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="Trailing Silence: 25 chunks (800ms)"
+        android:textSize="13sp"
+        android:layout_marginTop="4dp" />
+
+    <SeekBar
+        android:id="@+id/vadTrailingSilenceSeekBar"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:max="35"
+        android:progress="20"
         android:layout_marginBottom="24dp" />
 
     <TextView

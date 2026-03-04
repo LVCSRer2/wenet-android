@@ -734,6 +734,10 @@ public class MainActivity extends AppCompatActivity {
     int preBufferChunks = preBufferProgress + 2;
     sileroVad.setPreBufferSlots(preBufferChunks);
 
+    int trailingProgress = prefs.getInt("vad_trailing", 20);
+    int trailingChunks = trailingProgress + 5;
+    sileroVad.setTrailingSilenceChunks(trailingChunks);
+
     // Sync thresholds to VadProbView
     float silenceThreshold = Math.max(0.05f, threshold - 0.2f);
     ((VadProbView) findViewById(R.id.vadProbView)).setThresholds(threshold, silenceThreshold);

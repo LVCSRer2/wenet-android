@@ -20,12 +20,11 @@ public class SileroVad {
     private static final String TAG = "SileroVad";
     private static final int CHUNK_SIZE = 256;  // 256 samples = 32ms at 8kHz
     private static final int SAMPLE_RATE = 8000;
-    private static final int TRAILING_SILENCE_CHUNKS = 10;  // ~320ms
-
     // Configurable parameters
     private float speechThreshold = 0.5f;
     private float silenceThreshold = 0.3f;
     private int preBufferSlots = 10;  // ~320ms
+    private int trailingSilenceChunks = 25;  // ~800ms (enough for WeNet endpoint)
 
     public interface Callback {
         void onSpeechChunk(short[] data, int length);
@@ -66,6 +65,14 @@ public class SileroVad {
 
     public int getPreBufferSlots() {
         return preBufferSlots;
+    }
+
+    public void setTrailingSilenceChunks(int chunks) {
+        this.trailingSilenceChunks = Math.max(1, chunks);
+    }
+
+    public int getTrailingSilenceChunks() {
+        return trailingSilenceChunks;
     }
 
     public boolean init(Context context) {
@@ -185,7 +192,7 @@ public class SileroVad {
                 } else {
                     callback.onSpeechChunk(chunk, chunk.length);
                     trailingSilenceCount++;
-                    if (trailingSilenceCount > TRAILING_SILENCE_CHUNKS) {
+                    if (trailingSilenceCount > trailingSilenceChunks) {
                         vadState = State.IDLE;
                         trailingSilenceCount = 0;
                     }

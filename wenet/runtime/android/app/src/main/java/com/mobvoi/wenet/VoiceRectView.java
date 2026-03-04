@@ -7,29 +7,26 @@ import android.graphics.LinearGradient;
 import android.graphics.Paint;
 import android.graphics.Shader;
 import android.util.AttributeSet;
+import android.view.MotionEvent;
 import android.view.View;
 import androidx.core.content.ContextCompat;
+import java.util.ArrayList;
 import java.util.Arrays;
 
-/**
- * 自定义的音频模拟条形图 Created by shize on 2016/9/5.
- */
 public class VoiceRectView extends View {
 
   private static final int SAMPLES_PER_BAR = 512;  // match SpectrogramView FFT_SIZE
-  // 音频矩形的数量
-  private int mRectCount;
-  // 音频矩形的画笔
-  private Paint mRectPaint;
-  // 渐变颜色的两种
-  private int topColor, downColor;
-  // 音频矩形的宽和高
-  private int mRectWidth, mRectHeight;
-  // 偏移量
-  private int offset;
-  // 频率速度
-  private int mSpeed;
+  private static final int SAMPLE_RATE = 8000;
+  private static final int VISIBLE_SECONDS = 20;
+  private static final int VISIBLE_BARS = VISIBLE_SECONDS * SAMPLE_RATE / SAMPLES_PER_BAR; // 312
 
+  // Streaming mode fields
+  private int mRectCount;
+  private Paint mRectPaint;
+  private int topColor, downColor;
+  private int mRectWidth, mRectHeight;
+  private int offset;
+  private int mSpeed;
   private double[] mEnergyBuffer = null;
 
   // Sample-based accumulation for sync with spectrogram/VAD views
@@ -37,10 +34,23 @@ public class VoiceRectView extends View {
   private int sampleCount = 0;
   private int sampleAccum = 0;
 
-  // DAW playback mode
+  // Playback mode fields
   private boolean playbackMode = false;
   private float cursorFraction = -1f;
   private final Paint cursorPaint = new Paint();
+  private ArrayList<Double> fullBars = null;
+  private int totalDurationMs = 0;
+  private int scrollOffsetBars = 0;
+  private boolean userScrolling = false;
+
+  // Touch scrolling
+  private float touchStartX = 0;
+  private int touchStartOffset = 0;
+  private OnPlaybackSeekListener seekListener = null;
+
+  public interface OnPlaybackSeekListener {
+    void onSeek(int ms);
+  }
 
   public VoiceRectView(Context context) {
     this(context, null);
@@ -56,56 +66,50 @@ public class VoiceRectView extends View {
   }
 
   public void setPaint(Context context, AttributeSet attrs) {
-    // 将属性存储到TypedArray中
     TypedArray ta = context.obtainStyledAttributes(attrs, R.styleable.VoiceRect);
     mRectPaint = new Paint();
-    // 添加矩形画笔的基础颜色
     mRectPaint.setColor(ta.getColor(R.styleable.VoiceRect_RectTopColor,
         ContextCompat.getColor(context, R.color.top_color)));
-    // 添加矩形渐变色的上面部分
     topColor = ta.getColor(R.styleable.VoiceRect_RectTopColor,
         ContextCompat.getColor(context, R.color.top_color));
-    // 添加矩形渐变色的下面部分
     downColor = ta.getColor(R.styleable.VoiceRect_RectDownColor,
         ContextCompat.getColor(context, R.color.down_color));
-    // 设置矩形的数量
     mRectCount = ta.getInt(R.styleable.VoiceRect_RectCount, 10);
     mEnergyBuffer = new double[mRectCount];
-
-    // 设置重绘的时间间隔，也就是变化速度
     mSpeed = ta.getInt(R.styleable.VoiceRect_RectSpeed, 300);
-    // 每个矩形的间隔
     offset = ta.getInt(R.styleable.VoiceRect_RectOffset, 0);
-    // 回收TypeArray
     ta.recycle();
   }
 
   @Override
   protected void onSizeChanged(int w, int h, int oldW, int oldH) {
     super.onSizeChanged(w, h, oldW, oldH);
-    // 渐变效果
-    LinearGradient mLinearGradient;
-    // 画布的宽
-    int mWidth;
-    // 获取画布的宽
-    mWidth = getWidth();
-    // 获取矩形的最大高度
     mRectHeight = getHeight();
-    // 获取单个矩形的宽度(减去的部分为到右边界的间距)
-    mRectWidth = (mWidth - offset) / mRectCount;
-    // 实例化一个线性渐变
-    mLinearGradient = new LinearGradient(
-        0,
-        0,
-        mRectWidth,
-        mRectHeight,
-        topColor,
-        downColor,
-        Shader.TileMode.CLAMP
-    );
-    // 添加进画笔的着色器
+    updateBarWidth();
+  }
+
+  private void updateBarWidth() {
+    int mWidth = getWidth();
+    if (mWidth <= 0) return;
+    int barCount = playbackMode ? getVisibleBarCount() : mRectCount;
+    if (barCount <= 0) barCount = 1;
+    mRectWidth = (mWidth - offset) / barCount;
+    LinearGradient mLinearGradient = new LinearGradient(
+        0, 0, Math.max(1, mRectWidth), Math.max(1, mRectHeight),
+        topColor, downColor, Shader.TileMode.CLAMP);
     mRectPaint.setShader(mLinearGradient);
   }
+
+  private int getVisibleBarCount() {
+    if (fullBars == null || fullBars.isEmpty()) return VISIBLE_BARS;
+    return Math.min(VISIBLE_BARS, fullBars.size());
+  }
+
+  public void setOnPlaybackSeekListener(OnPlaybackSeekListener listener) {
+    this.seekListener = listener;
+  }
+
+  // --- Streaming mode methods ---
 
   public void add(double energy) {
     if (mEnergyBuffer.length - 1 >= 0) {
@@ -114,7 +118,6 @@ public class VoiceRectView extends View {
     mEnergyBuffer[mEnergyBuffer.length - 1] = energy;
   }
 
-  /** Sample-count based: accumulates 512 samples per bar, matching SpectrogramView. */
   public void addSamples(short[] data, int length) {
     for (int i = 0; i < length; i++) {
       sampleEnergyAccum += (double) data[i] * data[i];
@@ -139,34 +142,117 @@ public class VoiceRectView extends View {
     sampleAccum = 0;
   }
 
-  /** Set full waveform for DAW playback mode. */
-  public void setFullWaveform(double[] energies) {
+  // --- Playback mode methods ---
+
+  public void setFullWaveform(double[] energies, int durationMs) {
     if (energies == null || energies.length == 0) return;
     playbackMode = true;
     cursorFraction = 0f;
-    // Resample to mRectCount bars
-    for (int i = 0; i < mRectCount; i++) {
-      int srcIdx = (int) ((long) i * energies.length / mRectCount);
-      mEnergyBuffer[i] = energies[Math.min(srcIdx, energies.length - 1)];
+    scrollOffsetBars = 0;
+    userScrolling = false;
+    totalDurationMs = durationMs;
+    fullBars = new ArrayList<>(energies.length);
+    for (double e : energies) {
+      fullBars.add(e);
     }
+    updateBarWidth();
     postInvalidate();
   }
 
   public void setCursorPosition(float fraction) {
     cursorFraction = fraction;
+    if (playbackMode && fullBars != null && !fullBars.isEmpty() && !userScrolling) {
+      int cursorBar = (int) (fraction * fullBars.size());
+      int visibleBars = getVisibleBarCount();
+      if (cursorBar < scrollOffsetBars || cursorBar >= scrollOffsetBars + visibleBars) {
+        scrollOffsetBars = Math.max(0, cursorBar - visibleBars / 4);
+        int maxOffset = Math.max(0, fullBars.size() - visibleBars);
+        scrollOffsetBars = Math.min(scrollOffsetBars, maxOffset);
+      }
+    }
     postInvalidate();
   }
 
   public void clearPlaybackMode() {
     playbackMode = false;
     cursorFraction = -1f;
+    fullBars = null;
+    scrollOffsetBars = 0;
+    userScrolling = false;
+    totalDurationMs = 0;
     zero();
+    updateBarWidth();
     postInvalidate();
   }
+
+  // --- Touch handling for playback scroll ---
+
+  @Override
+  public boolean onTouchEvent(MotionEvent event) {
+    if (!playbackMode || fullBars == null || fullBars.isEmpty()) {
+      return super.onTouchEvent(event);
+    }
+
+    int viewWidth = getWidth();
+    if (viewWidth <= 0) return super.onTouchEvent(event);
+
+    int visibleBars = getVisibleBarCount();
+    int maxOffset = Math.max(0, fullBars.size() - visibleBars);
+
+    switch (event.getAction()) {
+      case MotionEvent.ACTION_DOWN:
+        userScrolling = true;
+        touchStartX = event.getX();
+        touchStartOffset = scrollOffsetBars;
+        getParent().requestDisallowInterceptTouchEvent(true);
+        return true;
+
+      case MotionEvent.ACTION_MOVE: {
+        float deltaX = touchStartX - event.getX();
+        float barWidth = (float) viewWidth / visibleBars;
+        int deltaBars = (int) (deltaX / barWidth);
+        scrollOffsetBars = Math.max(0, Math.min(maxOffset, touchStartOffset + deltaBars));
+        postInvalidate();
+        return true;
+      }
+
+      case MotionEvent.ACTION_UP:
+      case MotionEvent.ACTION_CANCEL: {
+        userScrolling = false;
+        getParent().requestDisallowInterceptTouchEvent(false);
+        // Calculate seek position from current scroll center
+        float touchX = event.getX();
+        int barIndex = scrollOffsetBars + (int) (touchX / ((float) viewWidth / visibleBars));
+        barIndex = Math.max(0, Math.min(fullBars.size() - 1, barIndex));
+        int seekMs = barIndexToMs(barIndex);
+        if (seekListener != null) {
+          seekListener.onSeek(seekMs);
+        }
+        return true;
+      }
+    }
+    return super.onTouchEvent(event);
+  }
+
+  private int barIndexToMs(int barIndex) {
+    if (fullBars == null || fullBars.isEmpty()) return 0;
+    return (int) ((long) barIndex * totalDurationMs / fullBars.size());
+  }
+
+  // --- Drawing ---
 
   @Override
   protected void onDraw(Canvas canvas) {
     super.onDraw(canvas);
+
+    if (playbackMode && fullBars != null && !fullBars.isEmpty()) {
+      drawPlaybackMode(canvas);
+    } else {
+      drawStreamingMode(canvas);
+    }
+  }
+
+  private void drawStreamingMode(Canvas canvas) {
     float currentHeight;
     for (int i = 0; i < mRectCount; i++) {
       currentHeight = (float) (mRectHeight * mEnergyBuffer[i]);
@@ -178,17 +264,38 @@ public class VoiceRectView extends View {
           mRectPaint
       );
     }
-    // Draw cursor line in playback mode
-    if (playbackMode && cursorFraction >= 0f) {
-      int viewWidth = getWidth();
-      float cx = cursorFraction * viewWidth;
-      cursorPaint.setColor(0xFFFF0000);
-      cursorPaint.setStrokeWidth(3f);
-      canvas.drawLine(cx, 0, cx, mRectHeight, cursorPaint);
+    postInvalidateDelayed(mSpeed);
+  }
+
+  private void drawPlaybackMode(Canvas canvas) {
+    int viewWidth = getWidth();
+    int viewHeight = getHeight();
+    if (viewWidth <= 0 || viewHeight <= 0) return;
+
+    int visibleBars = getVisibleBarCount();
+    float barWidth = (float) viewWidth / visibleBars;
+
+    // Draw bars
+    for (int i = 0; i < visibleBars; i++) {
+      int barIdx = scrollOffsetBars + i;
+      if (barIdx >= fullBars.size()) break;
+      double energy = fullBars.get(barIdx);
+      float h = (float) (viewHeight * energy);
+      float left = barWidth * i;
+      float right = barWidth * (i + 1);
+      canvas.drawRect(left, (viewHeight - h) / 2, right, viewHeight / 2 + h / 2, mRectPaint);
     }
-    // Only auto-redraw in streaming mode
-    if (!playbackMode) {
-      postInvalidateDelayed(mSpeed);
+
+    // Draw cursor line
+    if (cursorFraction >= 0f && fullBars.size() > 0) {
+      int cursorBar = (int) (cursorFraction * fullBars.size());
+      int relativeBar = cursorBar - scrollOffsetBars;
+      if (relativeBar >= 0 && relativeBar < visibleBars) {
+        float cx = (relativeBar + 0.5f) * barWidth;
+        cursorPaint.setColor(0xFFFF0000);
+        cursorPaint.setStrokeWidth(3f);
+        canvas.drawLine(cx, 0, cx, viewHeight, cursorPaint);
+      }
     }
   }
 }

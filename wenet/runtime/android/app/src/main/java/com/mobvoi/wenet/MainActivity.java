@@ -1093,14 +1093,29 @@ public class MainActivity extends AppCompatActivity {
       java.nio.ByteBuffer.wrap(pcmBytes).order(java.nio.ByteOrder.LITTLE_ENDIAN)
           .asShortBuffer().get(pcmShorts);
 
+      int durationMs = (int) (totalSamples * 1000L / SAMPLE_RATE);
+
       if (useSpectrogram) {
         SpectrogramView sv = findViewById(R.id.spectrogramView);
         sv.setFullSpectrogram(pcmShorts, totalSamples);
+        sv.setOnPlaybackSeekListener(ms -> {
+          long bytePos = ms * SAMPLE_RATE * 2L / 1000;
+          bytePos = Math.max(0, Math.min(bytePos, pcmFileLength));
+          playbackPositionBytes = bytePos;
+          updatePlaybackUI(ms);
+          updateKaraokeHighlight(ms);
+          updateVisualizationCursor(ms);
+          if (isPlaying) {
+            pausePlayback();
+            resumePlayback();
+          }
+        });
       } else {
-        // Compute energy bars
-        int barCount = 50;
+        // Compute energy bars at native resolution (512 samples/bar)
+        int samplesPerBar = 512;
+        int barCount = totalSamples / samplesPerBar;
+        if (barCount == 0) barCount = 1;
         double[] energies = new double[barCount];
-        int samplesPerBar = totalSamples / barCount;
         double maxDb = -999;
         double[] rawDb = new double[barCount];
         for (int i = 0; i < barCount; i++) {
@@ -1108,7 +1123,7 @@ public class MainActivity extends AppCompatActivity {
           int start = i * samplesPerBar;
           int end = Math.min(start + samplesPerBar, totalSamples);
           for (int j = start; j < end; j++) {
-            sum += pcmShorts[j] * pcmShorts[j];
+            sum += (double) pcmShorts[j] * pcmShorts[j];
           }
           double rms = Math.sqrt(sum / (end - start));
           double db = 20.0 * Math.log10(rms + 1e-10);
@@ -1121,7 +1136,19 @@ public class MainActivity extends AppCompatActivity {
           energies[i] = Math.max(0, Math.min(1.0, (rawDb[i] - floor) / (maxDb - floor)));
         }
         VoiceRectView vv = findViewById(R.id.voiceRectView);
-        vv.setFullWaveform(energies);
+        vv.setFullWaveform(energies, durationMs);
+        vv.setOnPlaybackSeekListener(ms -> {
+          long bytePos = ms * SAMPLE_RATE * 2L / 1000;
+          bytePos = Math.max(0, Math.min(bytePos, pcmFileLength));
+          playbackPositionBytes = bytePos;
+          updatePlaybackUI(ms);
+          updateKaraokeHighlight(ms);
+          updateVisualizationCursor(ms);
+          if (isPlaying) {
+            pausePlayback();
+            resumePlayback();
+          }
+        });
       }
     } catch (Exception e) {
       Log.e(LOG_TAG, "Error loading full visualization: " + e.getMessage());

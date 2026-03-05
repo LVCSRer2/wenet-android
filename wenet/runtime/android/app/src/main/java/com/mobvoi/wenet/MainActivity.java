@@ -262,8 +262,8 @@ public class MainActivity extends AppCompatActivity {
     TextView textView = findViewById(R.id.textView);
     textView.setText("");
     textView.setMovementMethod(LinkMovementMethod.getInstance());
-    int fontProgress = getSharedPreferences(PREFS_NAME, MODE_PRIVATE).getInt("result_font_size", 3);
-    textView.setTextSize(android.util.TypedValue.COMPLEX_UNIT_SP, fontProgress + 15);
+    int fontSp = getSharedPreferences(PREFS_NAME, MODE_PRIVATE).getInt("result_font_size", 18);
+    textView.setTextSize(android.util.TypedValue.COMPLEX_UNIT_SP, fontSp);
 
     Button button = findViewById(R.id.button);
     button.setEnabled(false);
@@ -798,6 +798,10 @@ public class MainActivity extends AppCompatActivity {
         @Override
         public void onSkippedSamples(int count) {
           Recognize.addSkippedSamples(count);
+          if (!needSnapshot[0]) {
+            // First skip after speech: push extra silence so WeNet detects endpoint immediately
+            Recognize.pushSilenceForEndpoint(8000); // 1 second of silence
+          }
           needSnapshot[0] = true;  // next speech chunk starts a new segment
         }
       };

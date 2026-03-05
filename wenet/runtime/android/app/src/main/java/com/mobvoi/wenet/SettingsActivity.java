@@ -143,9 +143,10 @@ public class SettingsActivity extends AppCompatActivity {
         // Result Font Size: SeekBar 0~10 → 10~20sp
         SeekBar resultFontSizeSeekBar = findViewById(R.id.resultFontSizeSeekBar);
         TextView resultFontSizeLabel = findViewById(R.id.resultFontSizeLabel);
-        int savedFontProgress = prefs.getInt(KEY_RESULT_FONT_SIZE, 3); // default 18sp
+        int savedFontSp = prefs.getInt(KEY_RESULT_FONT_SIZE, 18); // default 18sp (actual sp value)
+        int savedFontProgress = Math.max(0, Math.min(7, savedFontSp - 15));
         resultFontSizeSeekBar.setProgress(savedFontProgress);
-        resultFontSizeLabel.setText(String.format("Font Size: %dsp", savedFontProgress + 15));
+        resultFontSizeLabel.setText(String.format("Font Size: %dsp", savedFontSp));
         resultFontSizeSeekBar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
             @Override public void onProgressChanged(SeekBar sb, int progress, boolean fromUser) {
                 resultFontSizeLabel.setText(String.format("Font Size: %dsp", progress + 15));
@@ -187,7 +188,7 @@ public class SettingsActivity extends AppCompatActivity {
             prefs.edit().putInt(KEY_VAD_THRESHOLD, vadThresholdSeekBar.getProgress()).apply();
             prefs.edit().putInt(KEY_VAD_PREBUFFER, vadPreBufferSeekBar.getProgress()).apply();
             prefs.edit().putInt(KEY_VAD_TRAILING, vadTrailingSilenceSeekBar.getProgress()).apply();
-            prefs.edit().putInt(KEY_RESULT_FONT_SIZE, resultFontSizeSeekBar.getProgress()).apply();
+            prefs.edit().putInt(KEY_RESULT_FONT_SIZE, resultFontSizeSeekBar.getProgress() + 15).apply();
 
             Intent result = new Intent();
             boolean changed = false;

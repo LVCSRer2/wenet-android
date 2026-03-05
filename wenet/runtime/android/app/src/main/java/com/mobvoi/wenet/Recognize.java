@@ -19,4 +19,5 @@ public class Recognize {
   public static native void addSkippedSamples(int count);
   public static native void snapshotOffset();
   public static native boolean hasNewEndpoint();
+  public static native void pushSilenceForEndpoint(int samples);
 }

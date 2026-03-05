@@ -154,6 +154,15 @@ void add_skipped_samples(JNIEnv*, jobject, jint count) {
   skipped_samples_offset += count;
 }
 
+// Feed extra silence to trigger WeNet endpoint detection faster.
+// Called when VAD first enters skip mode after speech.
+void push_silence_for_endpoint(JNIEnv*, jobject, jint samples) {
+  std::vector<int16_t> silence(samples, 0);
+  feature_pipeline->AcceptWaveform(silence.data(), samples);
+  total_fed_samples += samples;
+  total_samples += samples;
+}
+
 // Called from Java before first acceptWaveform of a new speech segment.
 // Records the pipeline position and cumulative skip offset for timestamp correction.
 void snapshot_offset(JNIEnv*, jobject) {
@@ -382,6 +391,8 @@ JNIEXPORT jint JNI_OnLoad(JavaVM* vm, void*) {
        reinterpret_cast<void*>(wenet::snapshot_offset)},
       {"hasNewEndpoint", "()Z",
        reinterpret_cast<void*>(wenet::has_new_endpoint_fn)},
+      {"pushSilenceForEndpoint", "(I)V",
+       reinterpret_cast<void*>(wenet::push_silence_for_endpoint)},
   };
   int rc = env->RegisterNatives(c, methods,
                                 sizeof(methods) / sizeof(JNINativeMethod));

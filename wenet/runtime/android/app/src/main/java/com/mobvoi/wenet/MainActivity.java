@@ -444,8 +444,8 @@ public class MainActivity extends AppCompatActivity {
         sileroVad.init(this);
       }
       // Apply result font size
-      int fp = getSharedPreferences(PREFS_NAME, MODE_PRIVATE).getInt("result_font_size", 5);
-      ((TextView) findViewById(R.id.textView)).setTextSize(android.util.TypedValue.COMPLEX_UNIT_SP, fp + 10);
+      int fontSp = getSharedPreferences(PREFS_NAME, MODE_PRIVATE).getInt("result_font_size", 18);
+      ((TextView) findViewById(R.id.textView)).setTextSize(android.util.TypedValue.COMPLEX_UNIT_SP, fontSp);
     }
   }
 

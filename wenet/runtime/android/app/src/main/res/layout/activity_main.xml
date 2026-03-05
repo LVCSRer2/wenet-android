@@ -32,7 +32,7 @@
           android:layout_height="wrap_content"
           android:padding="8dp"
           android:text=""
-          android:textSize="20sp"
+          android:textSize="18sp"
           android:linksClickable="true" />
 
       </ScrollView>
@@ -100,14 +100,6 @@
         android:paddingBottom="2dp"
         android:visibility="gone">
 
-        <TextView
-          android:id="@+id/dbRangeLabel"
-          android:layout_width="wrap_content"
-          android:layout_height="wrap_content"
-          android:text="dB: -10 ~ 80"
-          android:textColor="#FFFFFF"
-          android:textSize="10sp" />
-
         <LinearLayout
           android:layout_width="match_parent"
           android:layout_height="wrap_content"
@@ -127,16 +119,9 @@
             android:layout_height="wrap_content"
             android:layout_weight="1"
             android:layout_marginStart="4dp"
+            android:layout_marginEnd="12dp"
             android:max="140"
             android:progress="20" />
-
-        </LinearLayout>
-
-        <LinearLayout
-          android:layout_width="match_parent"
-          android:layout_height="wrap_content"
-          android:orientation="horizontal"
-          android:gravity="center_vertical">
 
           <TextView
             android:layout_width="wrap_content"
@@ -153,6 +138,15 @@
             android:layout_marginStart="4dp"
             android:max="140"
             android:progress="120" />
+
+          <TextView
+            android:id="@+id/dbRangeLabel"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="8dp"
+            android:text="dB: -10~80"
+            android:textColor="#FFFFFF"
+            android:textSize="9sp" />
 
         </LinearLayout>
 

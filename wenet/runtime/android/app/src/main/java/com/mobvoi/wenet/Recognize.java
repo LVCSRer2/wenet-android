@@ -18,4 +18,5 @@ public class Recognize {
   public static native String getResultDelta();
   public static native void addSkippedSamples(int count);
   public static native void snapshotOffset();
+  public static native boolean hasNewEndpoint();
 }

@@ -28,6 +28,7 @@ public class SettingsActivity extends AppCompatActivity {
     private static final String KEY_VAD_THRESHOLD = "vad_threshold";
     private static final String KEY_VAD_PREBUFFER = "vad_prebuffer";
     private static final String KEY_VAD_TRAILING = "vad_trailing";
+    private static final String KEY_RESULT_FONT_SIZE = "result_font_size";
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -139,6 +140,20 @@ public class SettingsActivity extends AppCompatActivity {
             @Override public void onStopTrackingTouch(SeekBar sb) {}
         });
 
+        // Result Font Size: SeekBar 0~10 → 10~20sp
+        SeekBar resultFontSizeSeekBar = findViewById(R.id.resultFontSizeSeekBar);
+        TextView resultFontSizeLabel = findViewById(R.id.resultFontSizeLabel);
+        int savedFontProgress = prefs.getInt(KEY_RESULT_FONT_SIZE, 3); // default 18sp
+        resultFontSizeSeekBar.setProgress(savedFontProgress);
+        resultFontSizeLabel.setText(String.format("Font Size: %dsp", savedFontProgress + 15));
+        resultFontSizeSeekBar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+            @Override public void onProgressChanged(SeekBar sb, int progress, boolean fromUser) {
+                resultFontSizeLabel.setText(String.format("Font Size: %dsp", progress + 15));
+            }
+            @Override public void onStartTrackingTouch(SeekBar sb) {}
+            @Override public void onStopTrackingTouch(SeekBar sb) {}
+        });
+
         Button saveButton = findViewById(R.id.saveButton);
         saveButton.setOnClickListener(v -> {
             String url = urlEditText.getText().toString().trim();
@@ -172,6 +187,7 @@ public class SettingsActivity extends AppCompatActivity {
             prefs.edit().putInt(KEY_VAD_THRESHOLD, vadThresholdSeekBar.getProgress()).apply();
             prefs.edit().putInt(KEY_VAD_PREBUFFER, vadPreBufferSeekBar.getProgress()).apply();
             prefs.edit().putInt(KEY_VAD_TRAILING, vadTrailingSilenceSeekBar.getProgress()).apply();
+            prefs.edit().putInt(KEY_RESULT_FONT_SIZE, resultFontSizeSeekBar.getProgress()).apply();
 
             Intent result = new Intent();
             boolean changed = false;

@@ -262,6 +262,8 @@ public class MainActivity extends AppCompatActivity {
     TextView textView = findViewById(R.id.textView);
     textView.setText("");
     textView.setMovementMethod(LinkMovementMethod.getInstance());
+    int fontProgress = getSharedPreferences(PREFS_NAME, MODE_PRIVATE).getInt("result_font_size", 3);
+    textView.setTextSize(android.util.TypedValue.COMPLEX_UNIT_SP, fontProgress + 15);
 
     Button button = findViewById(R.id.button);
     button.setEnabled(false);
@@ -358,6 +360,7 @@ public class MainActivity extends AppCompatActivity {
         startBluetoothMic();
         startRecord = true;
         currentRecordingName = RecordingManager.createRecordingDir(this);
+        if (getSupportActionBar() != null) getSupportActionBar().setTitle(currentRecordingName);
         try {
           pcmOutputStream = new FileOutputStream(
               RecordingManager.getPcmAudioPath(this, currentRecordingName));
@@ -440,6 +443,9 @@ public class MainActivity extends AppCompatActivity {
       if (useVad && !sileroVad.isInitialized()) {
         sileroVad.init(this);
       }
+      // Apply result font size
+      int fp = getSharedPreferences(PREFS_NAME, MODE_PRIVATE).getInt("result_font_size", 5);
+      ((TextView) findViewById(R.id.textView)).setTextSize(android.util.TypedValue.COMPLEX_UNIT_SP, fp + 10);
     }
   }
 
@@ -822,7 +828,8 @@ public class MainActivity extends AppCompatActivity {
           }
           ((VadProbView) findViewById(R.id.vadProbView)).addSamples(data.length);
           long now = System.currentTimeMillis();
-          if (now - lastUiUpdate >= UI_UPDATE_INTERVAL_MS) {
+          boolean endpointFired = Recognize.hasNewEndpoint();
+          if (endpointFired || now - lastUiUpdate >= UI_UPDATE_INTERVAL_MS) {
             lastUiUpdate = now;
             final String d = buildLiveDisplay();
             runOnUiThread(() -> updateResultAndScroll(d));
@@ -1036,6 +1043,7 @@ public class MainActivity extends AppCompatActivity {
 
   private void enterPlaybackMode(String recordingName) {
     currentPlaybackRecording = recordingName;
+    if (getSupportActionBar() != null) getSupportActionBar().setTitle(recordingName);
 
     String audioPath = RecordingManager.getAudioPath(this, recordingName);
     File audioFile = new File(audioPath);

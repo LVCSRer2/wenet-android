@@ -41,6 +41,7 @@ std::shared_ptr<AsrDecoder> decoder;
 std::shared_ptr<DecodeResource> resource;
 DecodeState state = kEndBatch;
 std::atomic<bool> decode_thread_done{false};  // set after ALL kEndFeats processing
+std::atomic<bool> has_new_endpoint{false};    // set at each kEndpoint, cleared by Java
 std::string total_result;  // NOLINT
 std::string timed_result_json;  // JSON array of {w, s, e}
 size_t timed_result_sent_pos = 0;  // position already sent to Java
@@ -124,6 +125,7 @@ void reset(JNIEnv* env, jobject) {
   decoder->Reset();
   state = kEndBatch;
   decode_thread_done = false;
+  has_new_endpoint = false;
   total_result = "";
   timed_result_json = "";
   timed_result_sent_pos = 0;
@@ -263,6 +265,7 @@ void decode_thread_func() {
         timed_result_json += ",";
       }
       timed_result_json += R"({"w":"\n","s":0,"e":0})";
+      has_new_endpoint = true;
       last_partial_pieces.clear();
       endpoint_start_sample = total_samples;
       decoder->ResetContinuousDecoding();
@@ -313,6 +316,11 @@ jstring get_timed_result_delta(JNIEnv* env, jobject) {
   }
   std::string json = "[" + delta + "]";
   return env->NewStringUTF(json.c_str());
+}
+
+// Returns true if a new endpoint was detected since last call, then clears the flag.
+jboolean has_new_endpoint_fn(JNIEnv*, jobject) {
+  return has_new_endpoint.exchange(false) ? JNI_TRUE : JNI_FALSE;
 }
 
 // Returns full timed result (for final save)
@@ -372,6 +380,8 @@ JNIEXPORT jint JNI_OnLoad(JavaVM* vm, void*) {
        reinterpret_cast<void*>(wenet::add_skipped_samples)},
       {"snapshotOffset", "()V",
        reinterpret_cast<void*>(wenet::snapshot_offset)},
+      {"hasNewEndpoint", "()Z",
+       reinterpret_cast<void*>(wenet::has_new_endpoint_fn)},
   };
   int rc = env->RegisterNatives(c, methods,
                                 sizeof(methods) / sizeof(JNINativeMethod));

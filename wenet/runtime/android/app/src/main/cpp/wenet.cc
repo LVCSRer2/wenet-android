@@ -47,13 +47,13 @@ size_t timed_result_sent_pos = 0;  // position already sent to Java
 std::string total_result_sent;  // total_result already sent to Java
 int total_samples = 0;
 int endpoint_start_sample = 0;
-int skipped_samples_offset = 0;  // cumulative skipped samples (ASR thread writes)
-int total_fed_samples = 0;       // total samples fed to feature pipeline
+int64_t skipped_samples_offset = 0;  // cumulative skipped samples (ASR thread writes)
+int64_t total_fed_samples = 0;        // total samples fed to feature pipeline
 // Offset map: records (pipeline_ms, cumulative_skip_samples) at each segment start.
 // Decode thread looks up correct offset per word_piece timestamp.
 struct OffsetEntry {
   int pipeline_ms;
-  int skip_samples;
+  int64_t skip_samples;
 };
 std::mutex offset_map_mutex;
 std::vector<OffsetEntry> offset_map;
@@ -189,7 +189,7 @@ std::string JsonEscape(const std::string& s) {
 // Finds the last offset_map entry where pipeline_ms <= the word's timestamp.
 int LookupOffsetMs(int word_pipeline_ms) {
   std::lock_guard<std::mutex> lock(offset_map_mutex);
-  int offset_samples = 0;
+  int64_t offset_samples = 0;
   for (const auto& entry : offset_map) {
     if (entry.pipeline_ms <= word_pipeline_ms) {
       offset_samples = entry.skip_samples;
@@ -197,7 +197,7 @@ int LookupOffsetMs(int word_pipeline_ms) {
       break;
     }
   }
-  return offset_samples * 1000 / kSampleRate;
+  return (int)(offset_samples * 1000 / kSampleRate);
 }
 
 void AppendWordPiecesToJson(const std::vector<WordPiece>& pieces) {

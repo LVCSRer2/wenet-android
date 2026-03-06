@@ -9,7 +9,9 @@ import android.graphics.Rect;
 import android.util.AttributeSet;
 import android.util.Log;
 import android.view.MotionEvent;
+import android.view.VelocityTracker;
 import android.view.View;
+import android.widget.OverScroller;
 import java.io.FileInputStream;
 
 public class SpectrogramView extends View {
@@ -44,9 +46,11 @@ public class SpectrogramView extends View {
     private Bitmap windowBitmap = null;
     private int bufferStartCol = -1;
 
-    // Touch scrolling
+    // Touch scrolling + fling
     private float touchStartX = 0;
     private int touchStartOffset = 0;
+    private VelocityTracker velocityTracker = null;
+    private OverScroller scroller = null;
     private OnPlaybackSeekListener seekListener = null;
 
     public interface OnPlaybackSeekListener {
@@ -92,6 +96,7 @@ public class SpectrogramView extends View {
         }
         offscreen = Bitmap.createBitmap(MAX_COLUMNS, FREQ_BINS, Bitmap.Config.ARGB_8888);
         offscreen.eraseColor(Color.BLACK);
+        scroller = new OverScroller(getContext());
     }
 
     public void setOnPlaybackSeekListener(OnPlaybackSeekListener listener) {
@@ -148,19 +153,30 @@ public class SpectrogramView extends View {
 
     /** Set up on-demand spectrogram rendering from file. No upfront bitmap creation. */
     public void setFullSpectrogramFromFile(String filePath, int totalSamples) {
+        int initialStartCol = 0;
         synchronized (lock) {
             pcmFilePath = filePath;
             fullTotalColumns = totalSamples / FFT_SIZE;
             if (fullTotalColumns == 0) fullTotalColumns = 1;
             totalDurationMs = (int) (totalSamples * 1000L / SAMPLE_RATE);
-            scrollOffsetCols = 0;
             userScrolling = false;
             playbackMode = true;
-            cursorFraction = 0f;
             bufferStartCol = -1;
             if (windowBitmap != null) { windowBitmap.recycle(); windowBitmap = null; }
+            // If cursor already set (e.g. seekbar moved before load completed), scroll to it
+            if (cursorFraction > 0f) {
+                int cursorCol = (int) (cursorFraction * fullTotalColumns);
+                int visibleCols = Math.min(VISIBLE_COLUMNS, fullTotalColumns);
+                scrollOffsetCols = Math.max(0, cursorCol - visibleCols / 4);
+                int maxOffset = Math.max(0, fullTotalColumns - visibleCols);
+                scrollOffsetCols = Math.min(scrollOffsetCols, maxOffset);
+                initialStartCol = Math.max(0, scrollOffsetCols - VISIBLE_COLUMNS);
+            } else {
+                scrollOffsetCols = 0;
+                cursorFraction = 0f;
+            }
         }
-        loadWindowAsync(0);
+        loadWindowAsync(initialStartCol);
         postInvalidate();
     }
 
@@ -315,8 +331,12 @@ public class SpectrogramView extends View {
         int visibleCols = getVisibleColCount();
         int maxOffset = Math.max(0, fullTotalColumns - visibleCols);
 
+        if (velocityTracker == null) velocityTracker = VelocityTracker.obtain();
+        velocityTracker.addMovement(event);
+
         switch (event.getAction()) {
             case MotionEvent.ACTION_DOWN:
+                scroller.forceFinished(true);
                 userScrolling = true;
                 touchStartX = event.getX();
                 touchStartOffset = scrollOffsetCols;
@@ -333,23 +353,53 @@ public class SpectrogramView extends View {
                 return true;
             }
 
-            case MotionEvent.ACTION_UP:
+            case MotionEvent.ACTION_UP: {
+                userScrolling = false;
+                getParent().requestDisallowInterceptTouchEvent(false);
+                // Compute fling velocity in columns/sec
+                velocityTracker.computeCurrentVelocity(1000);
+                float velocityX = velocityTracker.getXVelocity();
+                velocityTracker.recycle();
+                velocityTracker = null;
+                float colWidth = (float) viewWidth / visibleCols;
+                int velocityCols = (int) (-velocityX / colWidth); // px/sec → col/sec
+                if (Math.abs(velocityCols) > 5) {
+                    // fling: use pixel units internally, convert back to cols
+                    scroller.fling(scrollOffsetCols, 0, velocityCols, 0,
+                            0, maxOffset, 0, 0);
+                    postInvalidate();
+                }
+                // Always seek to the lifted position (regardless of fling)
+                triggerWindowLoadIfNeeded();
+                float touchX = event.getX();
+                int colIndex = scrollOffsetCols + (int) (touchX / colWidth);
+                colIndex = Math.max(0, Math.min(fullTotalColumns - 1, colIndex));
+                int seekMs = (int) ((long) colIndex * totalDurationMs / fullTotalColumns);
+                if (seekListener != null) seekListener.onSeek(seekMs);
+                return true;
+            }
+
             case MotionEvent.ACTION_CANCEL: {
                 userScrolling = false;
                 getParent().requestDisallowInterceptTouchEvent(false);
+                if (velocityTracker != null) { velocityTracker.recycle(); velocityTracker = null; }
                 triggerWindowLoadIfNeeded();
-                float touchX = event.getX();
-                int colIndex = scrollOffsetCols
-                        + (int) (touchX / ((float) viewWidth / visibleCols));
-                colIndex = Math.max(0, Math.min(fullTotalColumns - 1, colIndex));
-                int seekMs = (int) ((long) colIndex * totalDurationMs / fullTotalColumns);
-                if (seekListener != null) {
-                    seekListener.onSeek(seekMs);
-                }
                 return true;
             }
         }
         return super.onTouchEvent(event);
+    }
+
+    @Override
+    public void computeScroll() {
+        if (scroller != null && scroller.computeScrollOffset()) {
+            int newOffset = scroller.getCurrX();
+            int visibleCols = getVisibleColCount();
+            int maxOffset = Math.max(0, fullTotalColumns - visibleCols);
+            scrollOffsetCols = Math.max(0, Math.min(maxOffset, newOffset));
+            triggerWindowLoadIfNeeded();
+            postInvalidate();
+        }
     }
 
     // --- Drawing ---

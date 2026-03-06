@@ -1132,7 +1132,7 @@ public class MainActivity extends AppCompatActivity {
         SpectrogramView sv = findViewById(R.id.spectrogramView);
         sv.setFullSpectrogramFromFile(audioPath, totalSamples);
         runOnUiThread(() -> sv.setOnPlaybackSeekListener(ms -> {
-          long bytePos = ms * SAMPLE_RATE * 2L / 1000;
+          long bytePos = (long) ms * SAMPLE_RATE * 2 / 1000;
           bytePos = Math.max(0, Math.min(bytePos, pcmFileLength));
           playbackPositionBytes = bytePos;
           updatePlaybackUI(ms);
@@ -1179,7 +1179,7 @@ public class MainActivity extends AppCompatActivity {
           VoiceRectView vv = findViewById(R.id.voiceRectView);
           vv.setFullWaveform(finalEnergies, finalDurationMs);
           vv.setOnPlaybackSeekListener(ms -> {
-            long bytePos = ms * SAMPLE_RATE * 2L / 1000;
+            long bytePos = (long) ms * SAMPLE_RATE * 2 / 1000;
             bytePos = Math.max(0, Math.min(bytePos, pcmFileLength));
             playbackPositionBytes = bytePos;
             updatePlaybackUI(ms);
@@ -1296,6 +1296,7 @@ public class MainActivity extends AppCompatActivity {
     audioTrack.play();
 
     // Start playback thread — streams from file
+    final AudioTrack myTrack = audioTrack; // capture locally to avoid null race
     playbackThread = new Thread(() -> {
       FileInputStream fis = null;
       try {
@@ -1309,11 +1310,12 @@ public class MainActivity extends AppCompatActivity {
         }
         byte[] chunk = new byte[bufSize];
         long pos = playbackPositionBytes;
-        while (isPlaying && pos < pcmFileLength) {
+        while (isPlaying && pos < pcmFileLength && playbackThread == Thread.currentThread()) {
           int toRead = (int) Math.min(chunk.length, pcmFileLength - pos);
           int bytesRead = fis.read(chunk, 0, toRead);
           if (bytesRead <= 0) break;
-          int written = audioTrack.write(chunk, 0, bytesRead);
+          if (myTrack == null) break;
+          int written = myTrack.write(chunk, 0, bytesRead);
           if (written > 0) {
             pos += written;
             if (isPlaying) {
@@ -1579,6 +1581,17 @@ public class MainActivity extends AppCompatActivity {
     }
 
     lastHighlightIndex = currentIndex;
+
+    // Auto-scroll text to show highlighted word
+    if (currentIndex >= 0) {
+      ScrollView scrollView = findViewById(R.id.scrollView);
+      int line = textView.getLayout() != null
+          ? textView.getLayout().getLineForOffset(karaokeSpanStarts[currentIndex]) : 0;
+      int y = textView.getLayout() != null
+          ? textView.getLayout().getLineTop(line) : 0;
+      int scrollViewHeight = scrollView.getHeight();
+      scrollView.smoothScrollTo(0, Math.max(0, y - scrollViewHeight / 3));
+    }
   }
 
   /** Binary search: find word index whose span contains the given character offset. */

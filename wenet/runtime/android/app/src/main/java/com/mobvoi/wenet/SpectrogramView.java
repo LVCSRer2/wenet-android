@@ -7,8 +7,10 @@ import android.graphics.Color;
 import android.graphics.Paint;
 import android.graphics.Rect;
 import android.util.AttributeSet;
+import android.util.Log;
 import android.view.MotionEvent;
 import android.view.View;
+import java.io.FileInputStream;
 
 public class SpectrogramView extends View {
 
@@ -19,6 +21,8 @@ public class SpectrogramView extends View {
     private static final int VISIBLE_SECONDS = 20;
     // Visible columns in playback mode: 20s * 8000Hz / 512 = 312
     private static final int VISIBLE_COLUMNS = VISIBLE_SECONDS * SAMPLE_RATE / FFT_SIZE;
+    // On-demand window buffer: 4x visible = ~1248 cols, ~1.3MB bitmap
+    private static final int BUFFER_COLS = VISIBLE_COLUMNS * 4;
 
     private final Paint bitmapPaint = new Paint(Paint.FILTER_BITMAP_FLAG);
     private final Paint cursorPaint = new Paint();
@@ -29,12 +33,16 @@ public class SpectrogramView extends View {
     private boolean playbackMode = false;
     private float cursorFraction = -1f;
 
-    // Full spectrogram bitmap for playback (totalColumns x FREQ_BINS)
-    private Bitmap fullBitmap = null;
     private int fullTotalColumns = 0;
     private int totalDurationMs = 0;
     private int scrollOffsetCols = 0;
     private boolean userScrolling = false;
+
+    // On-demand window rendering
+    private String pcmFilePath = null;
+    private volatile boolean windowLoading = false;
+    private Bitmap windowBitmap = null;
+    private int bufferStartCol = -1;
 
     // Touch scrolling
     private float touchStartX = 0;
@@ -136,54 +144,114 @@ public class SpectrogramView extends View {
         postInvalidate();
     }
 
-    // --- Playback mode ---
+    // --- Playback mode (on-demand window rendering) ---
 
-    /** Pre-compute full spectrogram at native resolution for playback. */
-    public void setFullSpectrogram(short[] pcm, int totalSamples) {
-        if (pcm == null || totalSamples <= 0) return;
-
-        int columns = totalSamples / FFT_SIZE;
-        if (columns == 0) columns = 1;
-
-        Bitmap bmp = Bitmap.createBitmap(columns, FREQ_BINS, Bitmap.Config.ARGB_8888);
-        bmp.eraseColor(Color.BLACK);
-
-        double[] wr = new double[FFT_SIZE];
-        double[] wi = new double[FFT_SIZE];
-        int[] pr = new int[FREQ_BINS];
-        double floor = dbFloor;
-        double ceil = dbCeil;
-        double range = ceil - floor;
-        if (range < 1.0) range = 1.0;
-
-        for (int col = 0; col < columns; col++) {
-            int startSample = col * FFT_SIZE;
-            for (int i = 0; i < FFT_SIZE; i++) {
-                int idx = startSample + i;
-                wr[i] = (idx < totalSamples) ? pcm[idx] * hannWindow[i] : 0.0;
-                wi[i] = 0.0;
-            }
-            fft(wr, wi, FFT_SIZE);
-            for (int k = 0; k < FREQ_BINS; k++) {
-                double mag = Math.sqrt(wr[k] * wr[k] + wi[k] * wi[k]) / FFT_SIZE;
-                double db = 20.0 * Math.log10(mag + 1e-10);
-                double norm = (db - floor) / range;
-                norm = Math.max(0.0, Math.min(1.0, norm));
-                pr[FREQ_BINS - 1 - k] = heatmapColor(norm);
-            }
-            bmp.setPixels(pr, 0, 1, col, 0, 1, FREQ_BINS);
-        }
-
+    /** Set up on-demand spectrogram rendering from file. No upfront bitmap creation. */
+    public void setFullSpectrogramFromFile(String filePath, int totalSamples) {
         synchronized (lock) {
-            fullBitmap = bmp;
-            fullTotalColumns = columns;
+            pcmFilePath = filePath;
+            fullTotalColumns = totalSamples / FFT_SIZE;
+            if (fullTotalColumns == 0) fullTotalColumns = 1;
             totalDurationMs = (int) (totalSamples * 1000L / SAMPLE_RATE);
             scrollOffsetCols = 0;
             userScrolling = false;
             playbackMode = true;
             cursorFraction = 0f;
+            bufferStartCol = -1;
+            if (windowBitmap != null) { windowBitmap.recycle(); windowBitmap = null; }
         }
+        loadWindowAsync(0);
         postInvalidate();
+    }
+
+    private void loadWindowAsync(final int targetStartCol) {
+        if (windowLoading) return;
+        windowLoading = true;
+        final String path = pcmFilePath;
+        final int startCol = Math.max(0, targetStartCol);
+        new Thread(() -> {
+            loadWindowSync(path, startCol);
+            windowLoading = false;
+            postInvalidate();
+        }).start();
+    }
+
+    private void loadWindowSync(String path, int startCol) {
+        if (path == null) return;
+        int endCol = Math.min(startCol + BUFFER_COLS, fullTotalColumns);
+        int cols = endCol - startCol;
+        if (cols <= 0) return;
+
+        Bitmap bmp = Bitmap.createBitmap(cols, FREQ_BINS, Bitmap.Config.ARGB_8888);
+        bmp.eraseColor(Color.BLACK);
+
+        try (FileInputStream fis = new FileInputStream(path)) {
+            // Seek to startCol position
+            long skipBytes = (long) startCol * FFT_SIZE * 2;
+            long skipped = 0;
+            while (skipped < skipBytes) {
+                long s = fis.skip(skipBytes - skipped);
+                if (s <= 0) break;
+                skipped += s;
+            }
+
+            byte[] frameBytes = new byte[FFT_SIZE * 2];
+            double[] wr = new double[FFT_SIZE];
+            double[] wi = new double[FFT_SIZE];
+            int[] pr = new int[FREQ_BINS];
+            double floor = dbFloor, ceil = dbCeil;
+            double range = (ceil - floor) < 1.0 ? 1.0 : ceil - floor;
+
+            for (int col = 0; col < cols; col++) {
+                if (!readStreamFully(fis, frameBytes, FFT_SIZE * 2)) break;
+                for (int i = 0; i < FFT_SIZE; i++) {
+                    short s = (short) ((frameBytes[i * 2] & 0xFF) | (frameBytes[i * 2 + 1] << 8));
+                    wr[i] = s * hannWindow[i];
+                    wi[i] = 0.0;
+                }
+                fft(wr, wi, FFT_SIZE);
+                for (int k = 0; k < FREQ_BINS; k++) {
+                    double mag = Math.sqrt(wr[k] * wr[k] + wi[k] * wi[k]) / FFT_SIZE;
+                    double db = 20.0 * Math.log10(mag + 1e-10);
+                    double norm = Math.max(0.0, Math.min(1.0, (db - floor) / range));
+                    pr[FREQ_BINS - 1 - k] = heatmapColor(norm);
+                }
+                bmp.setPixels(pr, 0, 1, col, 0, 1, FREQ_BINS);
+            }
+        } catch (Exception e) {
+            Log.e("SpectrogramView", "loadWindowSync: " + e.getMessage());
+            bmp.recycle();
+            return;
+        }
+
+        synchronized (lock) {
+            if (windowBitmap != null) windowBitmap.recycle();
+            windowBitmap = bmp;
+            bufferStartCol = startCol;
+        }
+    }
+
+    private boolean readStreamFully(FileInputStream fis, byte[] buf, int len) throws java.io.IOException {
+        int total = 0;
+        while (total < len) {
+            int read = fis.read(buf, total, len - total);
+            if (read < 0) return false;
+            total += read;
+        }
+        return true;
+    }
+
+    private void triggerWindowLoadIfNeeded() {
+        if (windowLoading || pcmFilePath == null) return;
+        int visibleCols = getVisibleColCount();
+        synchronized (lock) {
+            if (windowBitmap == null
+                    || scrollOffsetCols < bufferStartCol
+                    || scrollOffsetCols + visibleCols > bufferStartCol + windowBitmap.getWidth()) {
+                int newStart = Math.max(0, scrollOffsetCols - VISIBLE_COLUMNS);
+                loadWindowAsync(newStart);
+            }
+        }
     }
 
     public void setCursorPosition(float fraction) {
@@ -195,6 +263,7 @@ public class SpectrogramView extends View {
                 scrollOffsetCols = Math.max(0, cursorCol - visibleCols / 4);
                 int maxOffset = Math.max(0, fullTotalColumns - visibleCols);
                 scrollOffsetCols = Math.min(scrollOffsetCols, maxOffset);
+                triggerWindowLoadIfNeeded();
             }
         }
         postInvalidate();
@@ -203,11 +272,10 @@ public class SpectrogramView extends View {
     public void clearPlaybackMode() {
         playbackMode = false;
         cursorFraction = -1f;
+        pcmFilePath = null;
         synchronized (lock) {
-            if (fullBitmap != null) {
-                fullBitmap.recycle();
-                fullBitmap = null;
-            }
+            if (windowBitmap != null) { windowBitmap.recycle(); windowBitmap = null; }
+            bufferStartCol = -1;
             fullTotalColumns = 0;
             scrollOffsetCols = 0;
             userScrolling = false;
@@ -226,6 +294,10 @@ public class SpectrogramView extends View {
     }
 
     private int getVisibleColCount() {
+        if (totalDurationMs > 0 && fullTotalColumns > 0) {
+            int visibleCols = (int) ((long) fullTotalColumns * VISIBLE_SECONDS * 1000 / totalDurationMs);
+            return Math.max(1, Math.min(visibleCols, fullTotalColumns));
+        }
         return Math.min(VISIBLE_COLUMNS, fullTotalColumns);
     }
 
@@ -265,6 +337,7 @@ public class SpectrogramView extends View {
             case MotionEvent.ACTION_CANCEL: {
                 userScrolling = false;
                 getParent().requestDisallowInterceptTouchEvent(false);
+                triggerWindowLoadIfNeeded();
                 float touchX = event.getX();
                 int colIndex = scrollOffsetCols
                         + (int) (touchX / ((float) viewWidth / visibleCols));
@@ -290,7 +363,7 @@ public class SpectrogramView extends View {
         int viewH = getHeight();
         if (viewW == 0 || viewH == 0) return;
 
-        if (playbackMode && fullBitmap != null && fullTotalColumns > 0) {
+        if (playbackMode && fullTotalColumns > 0) {
             drawPlaybackMode(canvas, viewW, viewH);
         } else {
             drawStreamingMode(canvas, viewW, viewH);
@@ -299,13 +372,31 @@ public class SpectrogramView extends View {
 
     private void drawPlaybackMode(Canvas canvas, int viewW, int viewH) {
         int visibleCols = getVisibleColCount();
-        int srcLeft = scrollOffsetCols;
-        int srcRight = Math.min(srcLeft + visibleCols, fullTotalColumns);
-        if (srcRight <= srcLeft) return;
 
-        Rect src = new Rect(srcLeft, 0, srcRight, FREQ_BINS);
-        Rect dst = new Rect(0, 0, viewW, viewH);
-        canvas.drawBitmap(fullBitmap, src, dst, bitmapPaint);
+        Bitmap bmp;
+        int bmpStart;
+        synchronized (lock) {
+            bmp = windowBitmap;
+            bmpStart = bufferStartCol;
+        }
+
+        // Trigger load if window doesn't cover current view
+        if (!windowLoading && (bmp == null
+                || scrollOffsetCols < bmpStart
+                || scrollOffsetCols + visibleCols > bmpStart + bmp.getWidth())) {
+            int newStart = Math.max(0, scrollOffsetCols - VISIBLE_COLUMNS);
+            loadWindowAsync(newStart);
+        }
+
+        if (bmp != null && bmpStart >= 0) {
+            int srcLeft = Math.max(0, scrollOffsetCols - bmpStart);
+            int srcRight = Math.min(srcLeft + visibleCols, bmp.getWidth());
+            if (srcRight > srcLeft) {
+                Rect src = new Rect(srcLeft, 0, srcRight, FREQ_BINS);
+                Rect dst = new Rect(0, 0, viewW, viewH);
+                canvas.drawBitmap(bmp, src, dst, bitmapPaint);
+            }
+        }
 
         // Draw cursor
         if (cursorFraction >= 0f) {

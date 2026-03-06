@@ -102,6 +102,10 @@ public class VoiceRectView extends View {
 
   private int getVisibleBarCount() {
     if (fullBars == null || fullBars.isEmpty()) return VISIBLE_BARS;
+    if (totalDurationMs > 0) {
+      int visibleBars = (int) ((long) fullBars.size() * VISIBLE_SECONDS * 1000 / totalDurationMs);
+      return Math.max(1, Math.min(visibleBars, fullBars.size()));
+    }
     return Math.min(VISIBLE_BARS, fullBars.size());
   }
 

@@ -26,9 +26,7 @@ import android.os.Looper;
 import android.os.Process;
 import android.text.SpannableStringBuilder;
 import android.text.Spanned;
-import android.text.method.LinkMovementMethod;
 import android.text.style.BackgroundColorSpan;
-import android.text.style.ClickableSpan;
 import android.text.style.ForegroundColorSpan;
 import android.util.Log;
 import android.view.View;
@@ -41,7 +39,6 @@ import android.widget.ScrollView;
 import android.widget.SeekBar;
 import android.widget.TextView;
 import android.widget.Toast;
-import androidx.annotation.NonNull;
 import androidx.appcompat.app.AlertDialog;
 import androidx.appcompat.app.AppCompatActivity;
 import androidx.core.app.ActivityCompat;
@@ -261,7 +258,36 @@ public class MainActivity extends AppCompatActivity {
 
     TextView textView = findViewById(R.id.textView);
     textView.setText("");
-    textView.setMovementMethod(LinkMovementMethod.getInstance());
+    // No LinkMovementMethod: avoids DynamicLayout (slow scroll). Touch handled manually below.
+    textView.setOnTouchListener(new android.view.View.OnTouchListener() {
+      private float tapStartX, tapStartY;
+      private boolean moved;
+      @Override
+      public boolean onTouch(android.view.View v, android.view.MotionEvent event) {
+        switch (event.getAction()) {
+          case android.view.MotionEvent.ACTION_DOWN:
+            tapStartX = event.getX(); tapStartY = event.getY(); moved = false; break;
+          case android.view.MotionEvent.ACTION_MOVE:
+            if (Math.abs(event.getX()-tapStartX)>8 || Math.abs(event.getY()-tapStartY)>8) moved=true; break;
+          case android.view.MotionEvent.ACTION_UP:
+            if (!moved && karaokeSpanStarts != null && wordSpans != null) {
+              TextView tv = (TextView) v;
+              android.text.Layout layout = tv.getLayout();
+              if (layout != null) {
+                int x = (int)(event.getX()-tv.getTotalPaddingLeft()+tv.getScrollX());
+                int y = (int)(event.getY()-tv.getTotalPaddingTop()+tv.getScrollY());
+                int line = layout.getLineForVertical(y);
+                int offset = layout.getOffsetForHorizontal(line, x);
+                int idx = findWordAtCharOffset(offset);
+                if (idx >= 0) { seekToMs(wordSpans.get(idx).startMs); if (!isPlaying) resumePlayback(); }
+              }
+            }
+            break;
+        }
+        return false; // let ScrollView handle scrolling
+      }
+    });
+    textView.setClickable(true); // ensures ACTION_UP is delivered even inside ScrollView
     int fontSp = getSharedPreferences(PREFS_NAME, MODE_PRIVATE).getInt("result_font_size", 18);
     textView.setTextSize(android.util.TypedValue.COMPLEX_UNIT_SP, fontSp);
 
@@ -1088,29 +1114,24 @@ public class MainActivity extends AppCompatActivity {
     buildKaraokeText();
     updateKaraokeHighlight(0);
 
-    // Load full PCM for DAW visualization
-    loadFullVisualization(audioPath);
+    // Load full PCM for DAW visualization (background thread to avoid ANR)
+    new Thread(() -> loadFullVisualization(audioPath)).start();
   }
 
   private void loadFullVisualization(String audioPath) {
     try {
       File f = new File(audioPath);
       if (!f.exists() || f.length() == 0) return;
-      byte[] pcmBytes = new byte[(int) f.length()];
-      FileInputStream fis = new FileInputStream(f);
-      fis.read(pcmBytes);
-      fis.close();
-      int totalSamples = pcmBytes.length / 2;
-      short[] pcmShorts = new short[totalSamples];
-      java.nio.ByteBuffer.wrap(pcmBytes).order(java.nio.ByteOrder.LITTLE_ENDIAN)
-          .asShortBuffer().get(pcmShorts);
 
-      int durationMs = (int) (totalSamples * 1000L / SAMPLE_RATE);
+      long fileSize = f.length();
+      int totalSamples = (int) Math.min(fileSize / 2, Integer.MAX_VALUE);
+      int durationMs = (int) (fileSize / 2 * 1000L / SAMPLE_RATE);
 
       if (useSpectrogram) {
+        // setFullSpectrogramFromFile does its own streaming
         SpectrogramView sv = findViewById(R.id.spectrogramView);
-        sv.setFullSpectrogram(pcmShorts, totalSamples);
-        sv.setOnPlaybackSeekListener(ms -> {
+        sv.setFullSpectrogramFromFile(audioPath, totalSamples);
+        runOnUiThread(() -> sv.setOnPlaybackSeekListener(ms -> {
           long bytePos = ms * SAMPLE_RATE * 2L / 1000;
           bytePos = Math.max(0, Math.min(bytePos, pcmFileLength));
           playbackPositionBytes = bytePos;
@@ -1121,50 +1142,69 @@ public class MainActivity extends AppCompatActivity {
             pausePlayback();
             resumePlayback();
           }
-        });
+        }));
       } else {
-        // Compute energy bars at native resolution (512 samples/bar)
-        int samplesPerBar = 512;
+        // Stream file to compute energy bars; cap to 10000 bars for performance
+        final int MAX_BARS = 10000;
+        int samplesPerBar = Math.max(512, totalSamples / MAX_BARS);
         int barCount = totalSamples / samplesPerBar;
         if (barCount == 0) barCount = 1;
-        double[] energies = new double[barCount];
-        double maxDb = -999;
         double[] rawDb = new double[barCount];
-        for (int i = 0; i < barCount; i++) {
-          double sum = 0;
-          int start = i * samplesPerBar;
-          int end = Math.min(start + samplesPerBar, totalSamples);
-          for (int j = start; j < end; j++) {
-            sum += (double) pcmShorts[j] * pcmShorts[j];
+        double maxDb = -999;
+        try (FileInputStream fis = new FileInputStream(f)) {
+          byte[] chunk = new byte[samplesPerBar * 2];
+          for (int i = 0; i < barCount; i++) {
+            int read = readPcmChunk(fis, chunk);
+            if (read < chunk.length) break;
+            double sum = 0;
+            for (int j = 0; j < samplesPerBar; j++) {
+              short s = (short) ((chunk[j * 2] & 0xFF) | (chunk[j * 2 + 1] << 8));
+              sum += (double) s * s;
+            }
+            double rms = Math.sqrt(sum / samplesPerBar);
+            double db = 20.0 * Math.log10(rms + 1e-10);
+            rawDb[i] = db;
+            if (db > maxDb) maxDb = db;
           }
-          double rms = Math.sqrt(sum / (end - start));
-          double db = 20.0 * Math.log10(rms + 1e-10);
-          rawDb[i] = db;
-          if (db > maxDb) maxDb = db;
         }
-        // Normalize to 0~1
-        double floor = maxDb - 60; // 60dB dynamic range
+        double floor = maxDb - 60;
+        double range = (maxDb - floor) < 1e-9 ? 1.0 : maxDb - floor;
+        double[] energies = new double[barCount];
         for (int i = 0; i < barCount; i++) {
-          energies[i] = Math.max(0, Math.min(1.0, (rawDb[i] - floor) / (maxDb - floor)));
+          energies[i] = Math.max(0, Math.min(1.0, (rawDb[i] - floor) / range));
         }
-        VoiceRectView vv = findViewById(R.id.voiceRectView);
-        vv.setFullWaveform(energies, durationMs);
-        vv.setOnPlaybackSeekListener(ms -> {
-          long bytePos = ms * SAMPLE_RATE * 2L / 1000;
-          bytePos = Math.max(0, Math.min(bytePos, pcmFileLength));
-          playbackPositionBytes = bytePos;
-          updatePlaybackUI(ms);
-          updateKaraokeHighlight(ms);
-          updateVisualizationCursor(ms);
-          if (isPlaying) {
-            pausePlayback();
-            resumePlayback();
-          }
+        final double[] finalEnergies = energies;
+        final int finalDurationMs = durationMs;
+        runOnUiThread(() -> {
+          VoiceRectView vv = findViewById(R.id.voiceRectView);
+          vv.setFullWaveform(finalEnergies, finalDurationMs);
+          vv.setOnPlaybackSeekListener(ms -> {
+            long bytePos = ms * SAMPLE_RATE * 2L / 1000;
+            bytePos = Math.max(0, Math.min(bytePos, pcmFileLength));
+            playbackPositionBytes = bytePos;
+            updatePlaybackUI(ms);
+            updateKaraokeHighlight(ms);
+            updateVisualizationCursor(ms);
+            if (isPlaying) {
+              pausePlayback();
+              resumePlayback();
+            }
+          });
         });
       }
     } catch (Exception e) {
       Log.e(LOG_TAG, "Error loading full visualization: " + e.getMessage());
     }
+  }
+
+  private int readPcmChunk(FileInputStream fis, byte[] buf) throws java.io.IOException {
+    int total = 0;
+    while (total < buf.length) {
+      int read = fis.read(buf, total, buf.length - total);
+      if (read < 0) break;
+      total += read;
+    }
+    return total;
   }
 
   private List<WordSpan> loadWordSpans(String recordingName) {
@@ -1480,25 +1520,6 @@ public class MainActivity extends AppCompatActivity {
       }
     }
 
-    // Apply ClickableSpan to each word (set once, never removed)
-    for (int i = 0; i < wordSpans.size(); i++) {
-      final int wordStartMs = wordSpans.get(i).startMs;
-      karaokeSSB.setSpan(new ClickableSpan() {
-        @Override
-        public void onClick(@NonNull View widget) {
-          seekToMs(wordStartMs);
-          if (!isPlaying) {
-            resumePlayback();
-          }
-        }
-
-        @Override
-        public void updateDrawState(@NonNull android.text.TextPaint ds) {
-          ds.setUnderlineText(false);
-        }
-      }, karaokeSpanStarts[i], karaokeSpanEnds[i], Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
-    }
-
     TextView textView = findViewById(R.id.textView);
     textView.setText(karaokeSSB, TextView.BufferType.SPANNABLE);
   }
@@ -1511,21 +1532,23 @@ public class MainActivity extends AppCompatActivity {
     if (!(cs instanceof android.text.Spannable)) return;
     android.text.Spannable spannable = (android.text.Spannable) cs;
 
+    // Binary search: find word where startMs <= currentMs < endMs
     int currentIndex = -1;
-    for (int i = 0; i < wordSpans.size(); i++) {
-      WordSpan ws = wordSpans.get(i);
-      if (currentMs >= ws.startMs && currentMs < ws.endMs) {
-        currentIndex = i;
-        break;
-      }
+    int lo = 0, hi = wordSpans.size() - 1;
+    while (lo <= hi) {
+      int mid = (lo + hi) / 2;
+      WordSpan ws = wordSpans.get(mid);
+      if (currentMs < ws.startMs) { hi = mid - 1; }
+      else if (currentMs >= ws.endMs) { lo = mid + 1; }
+      else { currentIndex = mid; break; }
     }
-
+    // Fallback: last word with startMs <= currentMs
     if (currentIndex == -1 && currentMs > 0) {
-      for (int i = wordSpans.size() - 1; i >= 0; i--) {
-        if (currentMs >= wordSpans.get(i).startMs) {
-          currentIndex = i;
-          break;
-        }
+      lo = 0; hi = wordSpans.size() - 1;
+      while (lo <= hi) {
+        int mid = (lo + hi) / 2;
+        if (wordSpans.get(mid).startMs <= currentMs) { currentIndex = mid; lo = mid + 1; }
+        else { hi = mid - 1; }
       }
     }
 
@@ -1556,6 +1579,19 @@ public class MainActivity extends AppCompatActivity {
     }
 
     lastHighlightIndex = currentIndex;
+  }
+
+  /** Binary search: find word index whose span contains the given character offset. */
+  private int findWordAtCharOffset(int offset) {
+    if (karaokeSpanStarts == null || karaokeSpanEnds == null) return -1;
+    int lo = 0, hi = karaokeSpanStarts.length - 1;
+    while (lo <= hi) {
+      int mid = (lo + hi) / 2;
+      if (karaokeSpanEnds[mid] <= offset) { lo = mid + 1; }
+      else if (karaokeSpanStarts[mid] > offset) { hi = mid - 1; }
+      else { return mid; }
+    }
+    return -1;
   }
 
   // --- Recordings Dialog ---

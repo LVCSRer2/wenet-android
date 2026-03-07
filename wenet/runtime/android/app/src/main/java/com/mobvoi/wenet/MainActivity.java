@@ -302,69 +302,34 @@ public class MainActivity extends AppCompatActivity {
         getSharedPreferences(PREFS_NAME, MODE_PRIVATE).getString(KEY_VIZ_TYPE, "waveform"));
     updateVisualizationVisibility();
 
-    // dB range sliders for spectrogram
-    // Both SeekBars: 0..140 → dB -40..100, Floor <= Ceil enforced
-    final int DB_OFFSET = -40;
-    SeekBar dbFloorSeekBar = findViewById(R.id.dbFloorSeekBar);
-    SeekBar dbCeilSeekBar = findViewById(R.id.dbCeilSeekBar);
+    // dB range slider for spectrogram (Material RangeSlider)
+    com.google.android.material.slider.RangeSlider dbRangeSlider = findViewById(R.id.dbRangeSlider);
     TextView dbRangeLabel = findViewById(R.id.dbRangeLabel);
     SpectrogramView spectrogramView = findViewById(R.id.spectrogramView);
 
-    int savedFloorProgress = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
-        .getInt("db_floor_progress", 20);
-    int savedCeilProgress = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
-        .getInt("db_ceil_progress", 120);
-    dbFloorSeekBar.setProgress(savedFloorProgress);
-    dbCeilSeekBar.setProgress(savedCeilProgress);
-    double initFloor = savedFloorProgress + DB_OFFSET;
-    double initCeil = savedCeilProgress + DB_OFFSET;
-    spectrogramView.setDbFloor(initFloor);
-    spectrogramView.setDbCeil(initCeil);
-    dbRangeLabel.setText(String.format("dB: %.0f ~ %.0f", initFloor, initCeil));
+    float savedFloor = getSharedPreferences(PREFS_NAME, MODE_PRIVATE).getFloat("db_floor", -20f);
+    float savedCeil = getSharedPreferences(PREFS_NAME, MODE_PRIVATE).getFloat("db_ceil", 80f);
+    dbRangeSlider.setValues(savedFloor, savedCeil);
+    spectrogramView.setDbFloor(savedFloor);
+    spectrogramView.setDbCeil(savedCeil);
+    dbRangeLabel.setText(String.format("dB: %.0f~%.0f", savedFloor, savedCeil));
 
-    dbFloorSeekBar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
-      @Override
-      public void onProgressChanged(SeekBar sb, int progress, boolean fromUser) {
-        SeekBar ceilBar = findViewById(R.id.dbCeilSeekBar);
-        if (fromUser && progress >= ceilBar.getProgress()) {
-          sb.setProgress(ceilBar.getProgress() - 1);
-          return;
-        }
-        double floor = progress + DB_OFFSET;
-        double ceil = ceilBar.getProgress() + DB_OFFSET;
-        ((SpectrogramView) findViewById(R.id.spectrogramView)).setDbFloor(floor);
-        ((TextView) findViewById(R.id.dbRangeLabel))
-            .setText(String.format("dB: %.0f ~ %.0f", floor, ceil));
-      }
-      @Override
-      public void onStartTrackingTouch(SeekBar sb) {}
-      @Override
-      public void onStopTrackingTouch(SeekBar sb) {
-        getSharedPreferences(PREFS_NAME, MODE_PRIVATE).edit()
-            .putInt("db_floor_progress", sb.getProgress()).apply();
-      }
+    dbRangeSlider.addOnChangeListener((slider, value, fromUser) -> {
+      java.util.List<Float> values = slider.getValues();
+      float floor = values.get(0);
+      float ceil = values.get(1);
+      ((SpectrogramView) findViewById(R.id.spectrogramView)).setDbFloor(floor);
+      ((SpectrogramView) findViewById(R.id.spectrogramView)).setDbCeil(ceil);
+      ((TextView) findViewById(R.id.dbRangeLabel))
+          .setText(String.format("dB: %.0f~%.0f", floor, ceil));
     });
-
-    dbCeilSeekBar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
-      @Override
-      public void onProgressChanged(SeekBar sb, int progress, boolean fromUser) {
-        SeekBar floorBar = findViewById(R.id.dbFloorSeekBar);
-        if (fromUser && progress <= floorBar.getProgress()) {
-          sb.setProgress(floorBar.getProgress() + 1);
-          return;
-        }
-        double ceil = progress + DB_OFFSET;
-        double floor = floorBar.getProgress() + DB_OFFSET;
-        ((SpectrogramView) findViewById(R.id.spectrogramView)).setDbCeil(ceil);
-        ((TextView) findViewById(R.id.dbRangeLabel))
-            .setText(String.format("dB: %.0f ~ %.0f", floor, ceil));
-      }
-      @Override
-      public void onStartTrackingTouch(SeekBar sb) {}
-      @Override
-      public void onStopTrackingTouch(SeekBar sb) {
+    dbRangeSlider.addOnSliderTouchListener(new com.google.android.material.slider.RangeSlider.OnSliderTouchListener() {
+      @Override public void onStartTrackingTouch(com.google.android.material.slider.RangeSlider slider) {}
+      @Override public void onStopTrackingTouch(com.google.android.material.slider.RangeSlider slider) {
+        java.util.List<Float> values = slider.getValues();
         getSharedPreferences(PREFS_NAME, MODE_PRIVATE).edit()
-            .putInt("db_ceil_progress", sb.getProgress()).apply();
+            .putFloat("db_floor", values.get(0))
+            .putFloat("db_ceil", values.get(1)).apply();
       }
     });
 
@@ -1648,6 +1613,18 @@ public class MainActivity extends AppCompatActivity {
         RecordingManager.SearchResult sr = displayList.get(pos);
         ((TextView) convertView.findViewById(R.id.recordingName)).setText(sr.name);
         ((TextView) convertView.findViewById(R.id.recordingPreview)).setText(sr.preview);
+        // Show audio duration
+        TextView durationView = convertView.findViewById(R.id.recordingDuration);
+        File audioFile = new File(RecordingManager.getAudioPath(MainActivity.this, sr.name));
+        if (audioFile.exists() && audioFile.length() > 0) {
+          long totalSec = audioFile.length() / (SAMPLE_RATE * 2);
+          int h = (int)(totalSec / 3600);
+          int m = (int)((totalSec % 3600) / 60);
+          int s = (int)(totalSec % 60);
+          durationView.setText(String.format("[%02d:%02d:%02d]", h, m, s));
+        } else {
+          durationView.setText("");
+        }
         // Highlight currently selected recording
         if (sr.name.equals(currentPlaybackRecording)) {
           convertView.setBackgroundColor(0x332196F3); // light blue tint

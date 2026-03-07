@@ -92,63 +92,38 @@
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:layout_gravity="bottom"
-        android:orientation="vertical"
-        android:background="#80000000"
-        android:paddingStart="8dp"
-        android:paddingEnd="8dp"
-        android:paddingTop="2dp"
-        android:paddingBottom="2dp"
+        android:background="#99000000"
+        android:orientation="horizontal"
+        android:gravity="center_vertical"
+        android:paddingStart="4dp"
+        android:paddingEnd="4dp"
         android:visibility="gone">
 
-        <LinearLayout
-          android:layout_width="match_parent"
+        <com.google.android.material.slider.RangeSlider
+          android:id="@+id/dbRangeSlider"
+          android:layout_width="0dp"
+          android:layout_height="16dp"
+          android:layout_weight="1"
+          android:minHeight="0dp"
+          android:valueFrom="-40"
+          android:valueTo="100"
+          android:stepSize="1"
+          app:values="@array/initial_db_range"
+          app:thumbRadius="4dp"
+          app:thumbColor="#FFFFFF"
+          app:trackColorActive="#FFFFFF"
+          app:trackColorInactive="#70FFFFFF"
+          app:trackHeight="2dp"
+          app:labelBehavior="gone" />
+
+        <TextView
+          android:id="@+id/dbRangeLabel"
+          android:layout_width="wrap_content"
           android:layout_height="wrap_content"
-          android:orientation="horizontal"
-          android:gravity="center_vertical">
-
-          <TextView
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:text="Floor"
-            android:textColor="#AAAAAA"
-            android:textSize="9sp" />
-
-          <SeekBar
-            android:id="@+id/dbFloorSeekBar"
-            android:layout_width="0dp"
-            android:layout_height="wrap_content"
-            android:layout_weight="1"
-            android:layout_marginStart="4dp"
-            android:layout_marginEnd="12dp"
-            android:max="140"
-            android:progress="20" />
-
-          <TextView
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:text="Ceil"
-            android:textColor="#AAAAAA"
-            android:textSize="9sp" />
-
-          <SeekBar
-            android:id="@+id/dbCeilSeekBar"
-            android:layout_width="0dp"
-            android:layout_height="wrap_content"
-            android:layout_weight="1"
-            android:layout_marginStart="4dp"
-            android:max="140"
-            android:progress="120" />
-
-          <TextView
-            android:id="@+id/dbRangeLabel"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:layout_marginStart="8dp"
-            android:text="dB: -10~80"
-            android:textColor="#FFFFFF"
-            android:textSize="9sp" />
-
-        </LinearLayout>
+          android:layout_marginStart="2dp"
+          android:text="dB: -20~80"
+          android:textColor="#FFFFFF"
+          android:textSize="9sp" />
 
       </LinearLayout>
 

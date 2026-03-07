@@ -19,6 +19,7 @@ public class SileroVad {
 
     private static final String TAG = "SileroVad";
     private static final int CHUNK_SIZE = 256;  // 256 samples = 32ms at 8kHz
+    private static final int CONTEXT_SIZE = 32; // context samples for 8kHz
     private static final int SAMPLE_RATE = 8000;
     // Configurable parameters
     private float speechThreshold = 0.5f;
@@ -36,6 +37,7 @@ public class SileroVad {
     private OrtEnvironment ortEnv;
     private OrtSession ortSession;
     private float[][] state;  // [2][128]
+    private float[] audioContext;  // [CONTEXT_SIZE] audio context for temporal continuity
     private State vadState = State.IDLE;
     private int trailingSilenceCount = 0;
     private boolean initialized = false;
@@ -92,8 +94,9 @@ public class SileroVad {
             opts.setIntraOpNumThreads(1);
             ortSession = ortEnv.createSession(modelBytes, opts);
 
-            // Initialize state: [2][128] zeros
+            // Initialize state: [2][128] zeros, context: [CONTEXT_SIZE] zeros
             state = new float[2][128];
+            audioContext = new float[CONTEXT_SIZE];
             preBuffer = new short[preBufferSlots][];
             vadState = State.IDLE;
             trailingSilenceCount = 0;
@@ -228,14 +231,23 @@ public class SileroVad {
     private float infer(short[] chunk) {
         try {
             // Convert short[] to float[] normalized to [-1, 1]
-            float[] inputData = new float[CHUNK_SIZE];
+            float[] chunkFloat = new float[CHUNK_SIZE];
             for (int i = 0; i < CHUNK_SIZE; i++) {
-                inputData[i] = chunk[i] / 32768.0f;
+                chunkFloat[i] = chunk[i] / 32768.0f;
             }
 
+            // Prepend context from previous chunk for temporal continuity
+            int inputLen = CONTEXT_SIZE + CHUNK_SIZE;
+            float[] inputData = new float[inputLen];
+            System.arraycopy(audioContext, 0, inputData, 0, CONTEXT_SIZE);
+            System.arraycopy(chunkFloat, 0, inputData, CONTEXT_SIZE, CHUNK_SIZE);
+
+            // Save tail of current chunk as context for next call
+            System.arraycopy(chunkFloat, CHUNK_SIZE - CONTEXT_SIZE, audioContext, 0, CONTEXT_SIZE);
+
             // Prepare input tensors
-            // input: [1, 256]
-            long[] inputShape = {1, CHUNK_SIZE};
+            // input: [1, CONTEXT_SIZE + CHUNK_SIZE]
+            long[] inputShape = {1, inputLen};
             OnnxTensor inputTensor = OnnxTensor.createTensor(ortEnv,
                     FloatBuffer.wrap(inputData), inputShape);
 
@@ -316,6 +328,7 @@ public class SileroVad {
     public void reset() {
         if (!initialized) return;
         state = new float[2][128];
+        audioContext = new float[CONTEXT_SIZE];
         preBuffer = new short[preBufferSlots][];
         vadState = State.IDLE;
         trailingSilenceCount = 0;

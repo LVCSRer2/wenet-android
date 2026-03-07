@@ -49,6 +49,7 @@ std::string total_result_sent;  // total_result already sent to Java
 int total_samples = 0;
 int endpoint_start_sample = 0;
 int64_t skipped_samples_offset = 0;  // cumulative skipped samples (ASR thread writes)
+int64_t pushed_silence_total = 0;    // cumulative pushed silence samples (virtual time)
 int64_t total_fed_samples = 0;        // total samples fed to feature pipeline
 // Offset map: records (pipeline_ms, cumulative_skip_samples) at each segment start.
 // Decode thread looks up correct offset per word_piece timestamp.
@@ -133,6 +134,7 @@ void reset(JNIEnv* env, jobject) {
   total_samples = 0;
   endpoint_start_sample = 0;
   skipped_samples_offset = 0;
+  pushed_silence_total = 0;
   total_fed_samples = 0;
   {
     std::lock_guard<std::mutex> lock(offset_map_mutex);
@@ -161,6 +163,7 @@ void push_silence_for_endpoint(JNIEnv*, jobject, jint samples) {
   feature_pipeline->AcceptWaveform(silence.data(), samples);
   total_fed_samples += samples;
   total_samples += samples;
+  pushed_silence_total += samples;
 }
 
 // Called from Java before first acceptWaveform of a new speech segment.
@@ -168,9 +171,12 @@ void push_silence_for_endpoint(JNIEnv*, jobject, jint samples) {
 void snapshot_offset(JNIEnv*, jobject) {
   std::lock_guard<std::mutex> lock(offset_map_mutex);
   int pipeline_ms = total_fed_samples * 1000 / kSampleRate;
-  offset_map.push_back({pipeline_ms, skipped_samples_offset});
+  int64_t net_skip = skipped_samples_offset - pushed_silence_total;
+  offset_map.push_back({pipeline_ms, net_skip});
   LOG(INFO) << "wenet snapshot_offset: pipeline_ms=" << pipeline_ms
             << " skip_samples=" << skipped_samples_offset
+            << " pushed_silence=" << pushed_silence_total
+            << " net_skip=" << net_skip
             << " map_size=" << offset_map.size();
 }
 

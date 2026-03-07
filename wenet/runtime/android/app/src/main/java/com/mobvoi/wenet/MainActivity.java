@@ -163,6 +163,7 @@ public class MainActivity extends AppCompatActivity {
   private long pcmFileLength = 0;
   private boolean isPlaying = false;
   private volatile long playbackPositionBytes = 0;
+  private volatile long playbackStartBytes = 0; // file offset where current playback started
   private Thread playbackThread = null;
   private final Handler uiHandler = new Handler(Looper.getMainLooper());
   private Runnable playbackUpdater;
@@ -1294,6 +1295,7 @@ public class MainActivity extends AppCompatActivity {
     }
 
     audioTrack.play();
+    playbackStartBytes = playbackPositionBytes;
 
     // Start playback thread — streams from file
     final AudioTrack myTrack = audioTrack; // capture locally to avoid null race
@@ -1360,6 +1362,9 @@ public class MainActivity extends AppCompatActivity {
     stopPlaybackUpdater();
     if (audioTrack != null) {
       try {
+        // Sync position to actual hardware playback head before stopping
+        long framesPlayed = audioTrack.getPlaybackHeadPosition() & 0xFFFFFFFFL;
+        playbackPositionBytes = playbackStartBytes + framesPlayed * 2;
         audioTrack.pause();
         audioTrack.flush();
         audioTrack.stop();
@@ -1424,7 +1429,15 @@ public class MainActivity extends AppCompatActivity {
       public void run() {
         if (isPlaying) {
           int ms;
-          ms = bytesToMs(playbackPositionBytes);
+          AudioTrack at = audioTrack;
+          if (at != null) {
+            // Use hardware playback head for accurate position
+            long framesPlayed = at.getPlaybackHeadPosition() & 0xFFFFFFFFL;
+            long actualBytes = playbackStartBytes + framesPlayed * 2; // 16-bit mono = 2 bytes/frame
+            ms = bytesToMs(actualBytes);
+          } else {
+            ms = bytesToMs(playbackPositionBytes);
+          }
           updatePlaybackUI(ms);
           updateKaraokeHighlight(ms);
           updateVisualizationCursor(ms);

@@ -504,10 +504,31 @@ public class SpectrogramView extends View {
 
     public void setDbFloor(double floor) {
         this.dbFloor = floor;
+        reloadIfPlayback();
     }
 
     public void setDbCeil(double ceil) {
         this.dbCeil = ceil;
+        reloadIfPlayback();
+    }
+
+    public void setDbRange(double floor, double ceil) {
+        this.dbFloor = floor;
+        this.dbCeil = ceil;
+        reloadIfPlayback();
+    }
+
+    private void reloadIfPlayback() {
+        if (playbackMode && pcmFilePath != null) {
+            windowLoading = false; // allow reload even if previous load in progress
+            int startCol;
+            synchronized (lock) {
+                startCol = bufferStartCol;
+            }
+            loadWindowAsync(startCol);
+        } else {
+            postInvalidate();
+        }
     }
 
     private static void fft(double[] real, double[] imag, int n) {

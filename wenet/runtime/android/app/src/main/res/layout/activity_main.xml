@@ -7,14 +7,15 @@
     android:layout_height="match_parent"
     tools:context=".MainActivity">
 
+    <!-- 1. 인식결과 -->
     <FrameLayout
       android:id="@+id/textContainer"
       android:layout_width="0dp"
       android:layout_height="0dp"
-      app:layout_constraintBottom_toTopOf="@+id/vadProbView"
-      app:layout_constraintEnd_toEndOf="parent"
-      app:layout_constraintStart_toStartOf="parent"
       app:layout_constraintTop_toTopOf="parent"
+      app:layout_constraintBottom_toTopOf="@+id/playbackLayout"
+      app:layout_constraintStart_toStartOf="parent"
+      app:layout_constraintEnd_toEndOf="parent"
       android:layout_marginTop="16dp"
       android:layout_marginStart="8dp"
       android:layout_marginEnd="8dp">
@@ -52,83 +53,7 @@
 
     </FrameLayout>
 
-    <com.mobvoi.wenet.VadProbView
-      android:id="@+id/vadProbView"
-      android:layout_width="0dp"
-      android:layout_height="0dp"
-      app:layout_constraintHeight_percent="0.03"
-      app:layout_constraintBottom_toTopOf="@+id/visualizationContainer"
-      app:layout_constraintEnd_toEndOf="parent"
-      app:layout_constraintStart_toStartOf="parent" />
-
-    <FrameLayout
-      android:id="@+id/visualizationContainer"
-      android:layout_width="0dp"
-      android:layout_height="0dp"
-      app:layout_constraintHeight_percent="0.12"
-      app:layout_constraintBottom_toTopOf="@+id/playbackLayout"
-      app:layout_constraintEnd_toEndOf="parent"
-      app:layout_constraintStart_toStartOf="parent">
-
-      <com.mobvoi.wenet.VoiceRectView
-        android:id="@+id/voiceRectView"
-        android:layout_width="match_parent"
-        android:layout_height="match_parent"
-        VoiceRect:RectCount="200"
-        VoiceRect:RectDownColor="@color/green"
-        VoiceRect:RectOffset="0"
-        VoiceRect:RectSpeed="300"
-        VoiceRect:RectTopColor="@color/green"
-        android:visibility="visible" />
-
-      <com.mobvoi.wenet.SpectrogramView
-        android:id="@+id/spectrogramView"
-        android:layout_width="match_parent"
-        android:layout_height="match_parent"
-        android:visibility="gone" />
-
-      <LinearLayout
-        android:id="@+id/dbRangeLayout"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:layout_gravity="bottom"
-        android:background="#99000000"
-        android:orientation="horizontal"
-        android:gravity="center_vertical"
-        android:paddingStart="4dp"
-        android:paddingEnd="4dp"
-        android:visibility="gone">
-
-        <com.google.android.material.slider.RangeSlider
-          android:id="@+id/dbRangeSlider"
-          android:layout_width="0dp"
-          android:layout_height="16dp"
-          android:layout_weight="1"
-          android:minHeight="0dp"
-          android:valueFrom="-40"
-          android:valueTo="100"
-          android:stepSize="1"
-          app:values="@array/initial_db_range"
-          app:thumbRadius="4dp"
-          app:thumbColor="#FFFFFF"
-          app:trackColorActive="#FFFFFF"
-          app:trackColorInactive="#70FFFFFF"
-          app:trackHeight="2dp"
-          app:labelBehavior="gone" />
-
-        <TextView
-          android:id="@+id/dbRangeLabel"
-          android:layout_width="wrap_content"
-          android:layout_height="wrap_content"
-          android:layout_marginStart="2dp"
-          android:text="dB: -20~80"
-          android:textColor="#FFFFFF"
-          android:textSize="9sp" />
-
-      </LinearLayout>
-
-    </FrameLayout>
-
+    <!-- 2. Play 패널 -->
     <LinearLayout
       android:id="@+id/playbackLayout"
       android:layout_width="0dp"
@@ -138,7 +63,7 @@
       android:paddingStart="8dp"
       android:paddingEnd="8dp"
       android:visibility="gone"
-      app:layout_constraintBottom_toTopOf="@+id/button"
+      app:layout_constraintBottom_toTopOf="@+id/vadProbView"
       app:layout_constraintStart_toStartOf="parent"
       app:layout_constraintEnd_toEndOf="parent">
 
@@ -169,13 +94,96 @@
 
     </LinearLayout>
 
+    <!-- 3. VAD -->
+    <com.mobvoi.wenet.VadProbView
+      android:id="@+id/vadProbView"
+      android:layout_width="0dp"
+      android:layout_height="0dp"
+      app:layout_constraintHeight_percent="0.03"
+      app:layout_constraintBottom_toTopOf="@+id/visualizationContainer"
+      app:layout_constraintStart_toStartOf="parent"
+      app:layout_constraintEnd_toEndOf="parent" />
+
+    <!-- 4. 스펙트로그램 -->
+    <FrameLayout
+      android:id="@+id/visualizationContainer"
+      android:layout_width="0dp"
+      android:layout_height="0dp"
+      app:layout_constraintHeight_percent="0.08"
+      app:layout_constraintBottom_toTopOf="@+id/dbRangeLayout"
+      app:layout_constraintStart_toStartOf="parent"
+      app:layout_constraintEnd_toEndOf="parent">
+
+      <com.mobvoi.wenet.VoiceRectView
+        android:id="@+id/voiceRectView"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        VoiceRect:RectCount="200"
+        VoiceRect:RectDownColor="@color/green"
+        VoiceRect:RectOffset="0"
+        VoiceRect:RectSpeed="300"
+        VoiceRect:RectTopColor="@color/green"
+        android:visibility="visible" />
+
+      <com.mobvoi.wenet.SpectrogramView
+        android:id="@+id/spectrogramView"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:visibility="gone" />
+
+    </FrameLayout>
+
+    <!-- 5. dB 슬라이더 -->
+    <LinearLayout
+      android:id="@+id/dbRangeLayout"
+      android:layout_width="0dp"
+      android:layout_height="wrap_content"
+      android:background="#33000000"
+      android:orientation="horizontal"
+      android:gravity="center_vertical"
+      android:paddingStart="4dp"
+      android:paddingEnd="4dp"
+      android:visibility="gone"
+      app:layout_constraintBottom_toTopOf="@+id/button"
+      app:layout_constraintStart_toStartOf="parent"
+      app:layout_constraintEnd_toEndOf="parent">
+
+      <com.google.android.material.slider.RangeSlider
+        android:id="@+id/dbRangeSlider"
+        android:layout_width="0dp"
+        android:layout_height="8dp"
+        android:layout_weight="1"
+        android:minHeight="0dp"
+        android:valueFrom="-40"
+        android:valueTo="100"
+        android:stepSize="1"
+        app:values="@array/initial_db_range"
+        app:thumbRadius="4dp"
+        app:thumbColor="#444444"
+        app:trackColorActive="#444444"
+        app:trackColorInactive="#70444444"
+        app:trackHeight="2dp"
+        app:labelBehavior="gone" />
+
+      <TextView
+        android:id="@+id/dbRangeLabel"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginStart="2dp"
+        android:text="dB: -20~80"
+        android:textColor="#444444"
+        android:textSize="9sp" />
+
+    </LinearLayout>
+
+    <!-- 6. 하단 3개 버튼 -->
     <Button
       android:id="@+id/button"
       android:layout_width="0dp"
       android:layout_height="wrap_content"
       android:textSize="10sp"
       android:minHeight="0dp"
-      android:padding="12dp"
+      android:padding="6dp"
       android:layout_marginStart="4dp"
       android:layout_marginEnd="3dp"
       android:text="Button"
@@ -190,7 +198,7 @@
       android:layout_height="wrap_content"
       android:textSize="10sp"
       android:minHeight="0dp"
-      android:padding="12dp"
+      android:padding="6dp"
       android:layout_marginStart="3dp"
       android:layout_marginEnd="3dp"
       android:text="Recordings"
@@ -204,7 +212,7 @@
       android:layout_height="wrap_content"
       android:textSize="10sp"
       android:minHeight="0dp"
-      android:padding="12dp"
+      android:padding="6dp"
       android:layout_marginStart="3dp"
       android:layout_marginEnd="4dp"
       android:text="Settings"

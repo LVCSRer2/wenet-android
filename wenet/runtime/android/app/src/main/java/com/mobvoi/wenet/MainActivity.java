@@ -164,6 +164,7 @@ public class MainActivity extends AppCompatActivity {
   private boolean isPlaying = false;
   private volatile long playbackPositionBytes = 0;
   private volatile long playbackStartBytes = 0; // file offset where current playback started
+  private boolean userSeekingBar = false;
   private Thread playbackThread = null;
   private final Handler uiHandler = new Handler(Looper.getMainLooper());
   private Runnable playbackUpdater;
@@ -316,20 +317,19 @@ public class MainActivity extends AppCompatActivity {
 
     dbRangeSlider.addOnChangeListener((slider, value, fromUser) -> {
       java.util.List<Float> values = slider.getValues();
-      float floor = values.get(0);
-      float ceil = values.get(1);
-      ((SpectrogramView) findViewById(R.id.spectrogramView)).setDbFloor(floor);
-      ((SpectrogramView) findViewById(R.id.spectrogramView)).setDbCeil(ceil);
       ((TextView) findViewById(R.id.dbRangeLabel))
-          .setText(String.format("dB: %.0f~%.0f", floor, ceil));
+          .setText(String.format("dB: %.0f~%.0f", values.get(0), values.get(1)));
     });
     dbRangeSlider.addOnSliderTouchListener(new com.google.android.material.slider.RangeSlider.OnSliderTouchListener() {
       @Override public void onStartTrackingTouch(com.google.android.material.slider.RangeSlider slider) {}
       @Override public void onStopTrackingTouch(com.google.android.material.slider.RangeSlider slider) {
         java.util.List<Float> values = slider.getValues();
+        float floor = values.get(0);
+        float ceil = values.get(1);
+        ((SpectrogramView) findViewById(R.id.spectrogramView)).setDbRange(floor, ceil);
         getSharedPreferences(PREFS_NAME, MODE_PRIVATE).edit()
-            .putFloat("db_floor", values.get(0))
-            .putFloat("db_ceil", values.get(1)).apply();
+            .putFloat("db_floor", floor)
+            .putFloat("db_ceil", ceil).apply();
       }
     });
 
@@ -397,13 +397,20 @@ public class MainActivity extends AppCompatActivity {
       @Override
       public void onProgressChanged(SeekBar sb, int progress, boolean fromUser) {
         if (fromUser && playbackAudioPath != null) {
-          seekToMs(progress);
+          updatePlaybackUI(progress);
+          updateKaraokeHighlight(progress);
+          updateVisualizationCursor(progress);
         }
       }
       @Override
-      public void onStartTrackingTouch(SeekBar sb) {}
+      public void onStartTrackingTouch(SeekBar sb) { userSeekingBar = true; }
       @Override
-      public void onStopTrackingTouch(SeekBar sb) {}
+      public void onStopTrackingTouch(SeekBar sb) {
+        userSeekingBar = false;
+        if (playbackAudioPath != null) {
+          seekToMs(sb.getProgress());
+        }
+      }
     });
 
     // Recordings button
@@ -1097,18 +1104,7 @@ public class MainActivity extends AppCompatActivity {
         // setFullSpectrogramFromFile does its own streaming
         SpectrogramView sv = findViewById(R.id.spectrogramView);
         sv.setFullSpectrogramFromFile(audioPath, totalSamples);
-        runOnUiThread(() -> sv.setOnPlaybackSeekListener(ms -> {
-          long bytePos = (long) ms * SAMPLE_RATE * 2 / 1000;
-          bytePos = Math.max(0, Math.min(bytePos, pcmFileLength));
-          playbackPositionBytes = bytePos;
-          updatePlaybackUI(ms);
-          updateKaraokeHighlight(ms);
-          updateVisualizationCursor(ms);
-          if (isPlaying) {
-            pausePlayback();
-            resumePlayback();
-          }
-        }));
+        runOnUiThread(() -> sv.setOnPlaybackSeekListener(ms -> seekToMs(ms)));
       } else {
         // Stream file to compute energy bars; cap to 10000 bars for performance
         final int MAX_BARS = 10000;
@@ -1144,18 +1140,7 @@ public class MainActivity extends AppCompatActivity {
         runOnUiThread(() -> {
           VoiceRectView vv = findViewById(R.id.voiceRectView);
           vv.setFullWaveform(finalEnergies, finalDurationMs);
-          vv.setOnPlaybackSeekListener(ms -> {
-            long bytePos = (long) ms * SAMPLE_RATE * 2 / 1000;
-            bytePos = Math.max(0, Math.min(bytePos, pcmFileLength));
-            playbackPositionBytes = bytePos;
-            updatePlaybackUI(ms);
-            updateKaraokeHighlight(ms);
-            updateVisualizationCursor(ms);
-            if (isPlaying) {
-              pausePlayback();
-              resumePlayback();
-            }
-          });
+          vv.setOnPlaybackSeekListener(ms -> seekToMs(ms));
         });
       }
     } catch (Exception e) {
@@ -1393,19 +1378,21 @@ public class MainActivity extends AppCompatActivity {
       @Override
       public void run() {
         if (isPlaying) {
-          int ms;
-          AudioTrack at = audioTrack;
-          if (at != null) {
-            // Use hardware playback head for accurate position
-            long framesPlayed = at.getPlaybackHeadPosition() & 0xFFFFFFFFL;
-            long actualBytes = playbackStartBytes + framesPlayed * 2; // 16-bit mono = 2 bytes/frame
-            ms = bytesToMs(actualBytes);
-          } else {
-            ms = bytesToMs(playbackPositionBytes);
+          if (!userSeekingBar) {
+            int ms;
+            AudioTrack at = audioTrack;
+            if (at != null) {
+              // Use hardware playback head for accurate position
+              long framesPlayed = at.getPlaybackHeadPosition() & 0xFFFFFFFFL;
+              long actualBytes = playbackStartBytes + framesPlayed * 2; // 16-bit mono = 2 bytes/frame
+              ms = bytesToMs(actualBytes);
+            } else {
+              ms = bytesToMs(playbackPositionBytes);
+            }
+            updatePlaybackUI(ms);
+            updateKaraokeHighlight(ms);
+            updateVisualizationCursor(ms);
           }
-          updatePlaybackUI(ms);
-          updateKaraokeHighlight(ms);
-          updateVisualizationCursor(ms);
           uiHandler.postDelayed(this, PLAYBACK_UPDATE_MS);
         }
       }

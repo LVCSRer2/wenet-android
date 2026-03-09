@@ -275,7 +275,10 @@ public class MainActivity extends AppCompatActivity {
                 int line = layout.getLineForVertical(y);
                 int offset = layout.getOffsetForHorizontal(line, x);
                 int idx = findWordAtCharOffset(offset);
-                if (idx >= 0) { seekToMs(wordSpans.get(idx).startMs); if (!isPlaying) resumePlayback(); }
+                if (idx >= 0 && wordSpans != null && idx < wordSpans.size()) {
+                  seekToMs(wordSpans.get(idx).startMs);
+                  if (!isPlaying) resumePlayback();
+                }
               }
             }
             break;
@@ -1098,7 +1101,19 @@ public class MainActivity extends AppCompatActivity {
         // setFullSpectrogramFromFile does its own streaming
         SpectrogramView sv = findViewById(R.id.spectrogramView);
         sv.setFullSpectrogramFromFile(audioPath, totalSamples);
-        runOnUiThread(() -> sv.setOnPlaybackSeekListener(ms -> seekToMs(ms)));
+        runOnUiThread(() -> sv.setOnPlaybackSeekListener(new SpectrogramView.OnPlaybackSeekListener() {
+          @Override
+          public void onSeek(int ms) {
+            seekToMs(ms);
+          }
+
+          @Override
+          public void onZoomChanged(float visibleSeconds) {
+            // Sync waveform view zoom if it exists
+            VoiceRectView vv = findViewById(R.id.voiceRectView);
+            vv.setVisibleSeconds(visibleSeconds);
+          }
+        }));
       } else {
         // Stream file to compute energy bars; cap to 10000 bars for performance
         final int MAX_BARS = 10000;
@@ -1134,7 +1149,19 @@ public class MainActivity extends AppCompatActivity {
         runOnUiThread(() -> {
           VoiceRectView vv = findViewById(R.id.voiceRectView);
           vv.setFullWaveform(finalEnergies, finalDurationMs);
-          vv.setOnPlaybackSeekListener(ms -> seekToMs(ms));
+          vv.setOnPlaybackSeekListener(new VoiceRectView.OnPlaybackSeekListener() {
+            @Override
+            public void onSeek(int ms) {
+              seekToMs(ms);
+            }
+
+            @Override
+            public void onZoomChanged(float visibleSeconds) {
+              // Sync spectrogram if it's being used
+              SpectrogramView sv = findViewById(R.id.spectrogramView);
+              sv.setWindowSizeMs((int) (visibleSeconds * 1000));
+            }
+          });
         });
       }
     } catch (Exception e) {

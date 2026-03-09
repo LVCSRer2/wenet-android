@@ -17,8 +17,8 @@ public class VoiceRectView extends View {
 
   private static final int SAMPLES_PER_BAR = 512;  // match SpectrogramView FFT_SIZE
   private static final int SAMPLE_RATE = 8000;
-  private static final int VISIBLE_SECONDS = 20;
-  private static final int VISIBLE_BARS = VISIBLE_SECONDS * SAMPLE_RATE / SAMPLES_PER_BAR; // 312
+  private static final int DEFAULT_VISIBLE_SECONDS = 20;
+  private float visibleSecondsFloat = (float) DEFAULT_VISIBLE_SECONDS;
 
   // Streaming mode fields
   private int mRectCount;
@@ -50,6 +50,7 @@ public class VoiceRectView extends View {
 
   public interface OnPlaybackSeekListener {
     void onSeek(int ms);
+    void onZoomChanged(float visibleSeconds);
   }
 
   public VoiceRectView(Context context) {
@@ -101,12 +102,20 @@ public class VoiceRectView extends View {
   }
 
   private int getVisibleBarCount() {
-    if (fullBars == null || fullBars.isEmpty()) return VISIBLE_BARS;
+    if (fullBars == null || fullBars.isEmpty()) {
+        return (int) (DEFAULT_VISIBLE_SECONDS * SAMPLE_RATE / SAMPLES_PER_BAR);
+    }
     if (totalDurationMs > 0) {
-      int visibleBars = (int) ((long) fullBars.size() * VISIBLE_SECONDS * 1000 / totalDurationMs);
+      int visibleBars = (int) ((long) fullBars.size() * visibleSecondsFloat * 1000 / totalDurationMs);
       return Math.max(1, Math.min(visibleBars, fullBars.size()));
     }
-    return Math.min(VISIBLE_BARS, fullBars.size());
+    return Math.min((int) (DEFAULT_VISIBLE_SECONDS * SAMPLE_RATE / SAMPLES_PER_BAR), fullBars.size());
+  }
+
+  public void setVisibleSeconds(float seconds) {
+    this.visibleSecondsFloat = seconds;
+    updateBarWidth();
+    postInvalidate();
   }
 
   public void setOnPlaybackSeekListener(OnPlaybackSeekListener listener) {
@@ -151,6 +160,7 @@ public class VoiceRectView extends View {
   public void setFullWaveform(double[] energies, int durationMs) {
     if (energies == null || energies.length == 0) return;
     playbackMode = true;
+    visibleSecondsFloat = (float) DEFAULT_VISIBLE_SECONDS;
     cursorFraction = 0f;
     scrollOffsetBars = 0;
     userScrolling = false;
@@ -179,6 +189,7 @@ public class VoiceRectView extends View {
 
   public void clearPlaybackMode() {
     playbackMode = false;
+    visibleSecondsFloat = (float) DEFAULT_VISIBLE_SECONDS;
     cursorFraction = -1f;
     fullBars = null;
     scrollOffsetBars = 0;

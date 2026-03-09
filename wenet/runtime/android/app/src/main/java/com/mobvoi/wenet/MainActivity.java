@@ -115,12 +115,6 @@ public class MainActivity extends AppCompatActivity {
       for (android.media.AudioDeviceInfo device : addedDevices) {
         if (device.getType() == android.media.AudioDeviceInfo.TYPE_BLUETOOTH_SCO) {
           Log.i(LOG_TAG, "BT device added: " + device.getProductName());
-          // Pre-establish SCO link so next recording will use BT
-          String micDevice = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
-              .getString("mic_device", "bluetooth");
-          if (!"phone".equals(micDevice)) {
-            startBluetoothMic();
-          }
           if (startRecord) {
             runOnUiThread(() -> Toast.makeText(MainActivity.this,
                 "블루투스 연결됨. 녹음을 재시작하세요.", Toast.LENGTH_LONG).show());
@@ -1185,6 +1179,13 @@ public class MainActivity extends AppCompatActivity {
   private void resumePlayback() {
     if (playbackAudioPath == null) return;
 
+    if (startRecord) {
+      startRecord = false;
+      Recognize.setInputFinished();
+      Button button = findViewById(R.id.button);
+      button.setText("Record");
+    }
+
     isPlaying = true;
     Button playPauseButton = findViewById(R.id.playPauseButton);
     playPauseButton.setText("Pause");
@@ -1222,10 +1223,20 @@ public class MainActivity extends AppCompatActivity {
       android.media.AudioDeviceInfo[] outputDevices =
           audioManager.getDevices(AudioManager.GET_DEVICES_OUTPUTS);
       android.media.AudioDeviceInfo btDevice = null;
+      // Prefer A2DP for high-quality media playback
       for (android.media.AudioDeviceInfo device : outputDevices) {
-        if (device.getType() == android.media.AudioDeviceInfo.TYPE_BLUETOOTH_A2DP
-            || device.getType() == android.media.AudioDeviceInfo.TYPE_BLUETOOTH_SCO) {
+        if (device.getType() == android.media.AudioDeviceInfo.TYPE_BLUETOOTH_A2DP) {
           btDevice = device;
+          break;
+        }
+      }
+      // If no A2DP, fall back to SCO
+      if (btDevice == null) {
+        for (android.media.AudioDeviceInfo device : outputDevices) {
+          if (device.getType() == android.media.AudioDeviceInfo.TYPE_BLUETOOTH_SCO) {
+            btDevice = device;
+            break;
+          }
         }
       }
       if (btDevice != null) {

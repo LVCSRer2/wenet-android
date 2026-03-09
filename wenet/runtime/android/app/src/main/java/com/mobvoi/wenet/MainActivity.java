@@ -1163,12 +1163,23 @@ public class MainActivity extends AppCompatActivity {
       fis.read(data);
       fis.close();
       JSONArray arr = new JSONArray(new String(data, "UTF-8"));
+      int lastEndMs = 0;
       for (int i = 0; i < arr.length(); i++) {
         JSONObject obj = arr.getJSONObject(i);
-        spans.add(new WordSpan(
-            obj.getString("w"),
-            obj.getInt("s"),
-            obj.getInt("e")));
+        String word = obj.getString("w");
+        int start = obj.getInt("s");
+        int end = obj.getInt("e");
+        
+        // Fix for tokens with 0 timestamps (like \n) breaking binary search sorting
+        if (start == 0 && end == 0 && i > 0) {
+            start = lastEndMs;
+            end = lastEndMs;
+        }
+        
+        spans.add(new WordSpan(word, start, end));
+        if (end > lastEndMs) {
+            lastEndMs = end;
+        }
       }
     } catch (Exception e) {
       Log.e(LOG_TAG, "Error loading word spans: " + e.getMessage());
@@ -1533,7 +1544,24 @@ public class MainActivity extends AppCompatActivity {
     // Skip if same word is already highlighted
     if (currentIndex == lastHighlightIndex) return;
 
-    // Remove old highlight
+    // Fix: if current index is a special token with no length (like \n) or just a space,
+    // find the previous visible word so highlighting doesn't disappear.
+    if (currentIndex >= 0) {
+      int originalIndex = currentIndex;
+      while (currentIndex >= 0 &&
+          (karaokeSpanEnds[currentIndex] - karaokeSpanStarts[currentIndex] <= 0
+           || "\u2581".equals(wordSpans.get(currentIndex).word))) {
+        currentIndex--;
+      }
+      // If we went too far back, revert to the found index (could be -1 if no visible word before)
+      if (currentIndex < 0 && originalIndex >= 0) {
+          // If no previous visible word, stay at -1 (no highlight) or try to find first visible word after
+          currentIndex = -1;
+      }
+    }
+
+    // Skip again after potential index adjustment
+    if (currentIndex == lastHighlightIndex) return;
     if (currentBgSpan != null) {
       spannable.removeSpan(currentBgSpan);
     }

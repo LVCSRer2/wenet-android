@@ -116,8 +116,14 @@ public class MainActivity extends AppCompatActivity {
         if (device.getType() == android.media.AudioDeviceInfo.TYPE_BLUETOOTH_SCO) {
           Log.i(LOG_TAG, "BT device added: " + device.getProductName());
           if (startRecord) {
+            // Seamlesly switch to BT mic during recording
+            startBluetoothMic();
+            if (record != null) {
+              boolean result = record.setPreferredDevice(device);
+              Log.i(LOG_TAG, "setPreferredDevice(BT_SCO) during recording = " + result);
+            }
             runOnUiThread(() -> Toast.makeText(MainActivity.this,
-                "블루투스 연결됨. 녹음을 재시작하세요.", Toast.LENGTH_LONG).show());
+                "블루투스 마이크로 자동 전환되었습니다.", Toast.LENGTH_LONG).show());
           }
           return;
         }
@@ -528,14 +534,6 @@ public class MainActivity extends AppCompatActivity {
 
   private void startBluetoothMic() {
     try {
-      // Check mic device setting
-      String micDevice = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
-          .getString("mic_device", "bluetooth");
-      if ("phone".equals(micDevice)) {
-        Log.i(LOG_TAG, "Mic device set to phone, skipping Bluetooth");
-        return;
-      }
-
       // Android 12 (API 31)+ requires BLUETOOTH_CONNECT runtime permission
       if (Build.VERSION.SDK_INT >= 31
           && ContextCompat.checkSelfPermission(this, "android.permission.BLUETOOTH_CONNECT")
@@ -544,36 +542,31 @@ public class MainActivity extends AppCompatActivity {
         return;
       }
 
-      // Android 12+ (API 31): use setCommunicationDevice API
+      // Automatically detect and use Bluetooth SCO if available
       if (Build.VERSION.SDK_INT >= 31) {
         List<android.media.AudioDeviceInfo> devices = audioManager.getAvailableCommunicationDevices();
         for (android.media.AudioDeviceInfo device : devices) {
-          Log.i(LOG_TAG, "Available comm device: type=" + device.getType()
-              + " name=" + device.getProductName());
           if (device.getType() == android.media.AudioDeviceInfo.TYPE_BLUETOOTH_SCO) {
             boolean result = audioManager.setCommunicationDevice(device);
-            Log.i(LOG_TAG, "setCommunicationDevice(BT_SCO) = " + result
-                + " name=" + device.getProductName());
             if (result) {
+              Log.i(LOG_TAG, "Auto-selected BT SCO device: " + device.getProductName());
               bluetoothScoOn = true;
               return;
             }
           }
         }
-        Log.i(LOG_TAG, "No BT SCO device found in available communication devices");
-        return;
+      } else {
+        // Legacy path auto-detection
+        if (audioManager.isBluetoothScoAvailableOffCall()) {
+          audioManager.setMode(AudioManager.MODE_IN_COMMUNICATION);
+          audioManager.startBluetoothSco();
+          audioManager.setBluetoothScoOn(true);
+          bluetoothScoOn = true;
+          Log.i(LOG_TAG, "Bluetooth SCO auto-activated (legacy)");
+          return;
+        }
       }
-
-      // Legacy path for Android < 12
-      if (!audioManager.isBluetoothScoAvailableOffCall()) {
-        Log.i(LOG_TAG, "Bluetooth SCO not available off call, using phone mic");
-        return;
-      }
-      audioManager.setMode(AudioManager.MODE_IN_COMMUNICATION);
-      audioManager.startBluetoothSco();
-      audioManager.setBluetoothScoOn(true);
-      bluetoothScoOn = true;
-      Log.i(LOG_TAG, "Bluetooth SCO requested (legacy)");
+      Log.i(LOG_TAG, "No BT device found, using phone mic");
     } catch (Exception e) {
       Log.i(LOG_TAG, "Bluetooth SCO not available: " + e.getMessage());
       bluetoothScoOn = false;
@@ -581,23 +574,32 @@ public class MainActivity extends AppCompatActivity {
   }
 
   private void stopBluetoothMic() {
-    if (bluetoothScoOn) {
-      try {
-        if (Build.VERSION.SDK_INT >= 31) {
-          audioManager.clearCommunicationDevice();
-          Log.i(LOG_TAG, "clearCommunicationDevice called");
-        } else {
-          audioManager.setBluetoothScoOn(false);
-          audioManager.stopBluetoothSco();
-          audioManager.setMode(AudioManager.MODE_NORMAL);
-          Log.i(LOG_TAG, "Bluetooth SCO stopped (legacy)");
-        }
-      } catch (Exception ignored) {}
-      bluetoothScoOn = false;
+    try {
+      if (Build.VERSION.SDK_INT >= 31) {
+        audioManager.clearCommunicationDevice();
+        Log.i(LOG_TAG, "clearCommunicationDevice called");
+      }
+      // Always stop legacy SCO and reset mode to be safe
+      audioManager.setBluetoothScoOn(false);
+      audioManager.stopBluetoothSco();
+      audioManager.setSpeakerphoneOn(false);
+      audioManager.setMode(AudioManager.MODE_NORMAL);
+      Log.i(LOG_TAG, "Audio mode reset to NORMAL, speakerphone OFF");
+    } catch (Exception e) {
+      Log.e(LOG_TAG, "Error stopping Bluetooth mic: " + e.getMessage());
     }
+    bluetoothScoOn = false;
   }
 
   private void initRecorder() {
+    if (record != null) {
+      try {
+        record.stop();
+        record.release();
+      } catch (Exception ignored) {}
+      record = null;
+    }
+
     miniBufferSize = AudioRecord.getMinBufferSize(SAMPLE_RATE,
         AudioFormat.CHANNEL_IN_MONO,
         AudioFormat.ENCODING_PCM_16BIT);
@@ -663,8 +665,20 @@ public class MainActivity extends AppCompatActivity {
   }
 
   private void startRecordThread() {
+    if (record == null) {
+      Log.e(LOG_TAG, "record is null, cannot start recording");
+      runOnUiThread(() -> Toast.makeText(this, "녹음 장치를 초기화할 수 없습니다.", Toast.LENGTH_SHORT).show());
+      startRecord = false;
+      return;
+    }
     new Thread(() -> {
-      record.startRecording();
+      try {
+        record.startRecording();
+      } catch (IllegalStateException e) {
+        Log.e(LOG_TAG, "Failed to start recording: " + e.getMessage());
+        startRecord = false;
+        return;
+      }
       Process.setThreadPriority(Process.THREAD_PRIORITY_AUDIO);
       short[] buffer = new short[miniBufferSize / 2];
       byte[] pcmBytes = new byte[miniBufferSize]; // pre-allocate for PCM write
@@ -694,6 +708,8 @@ public class MainActivity extends AppCompatActivity {
         }
       }
       record.stop();
+      record.release();
+      record = null;
       releaseAudioEffects();
       stopBluetoothMic();
       if (useSpectrogram) {
@@ -1222,6 +1238,12 @@ public class MainActivity extends AppCompatActivity {
       Recognize.setInputFinished();
       Button button = findViewById(R.id.button);
       button.setText("Record");
+      
+      // Stop BT mic immediately to trigger profile switch
+      stopBluetoothMic();
+      
+      // Wait longer for hardware to switch from HFP/SCO to A2DP
+      try { Thread.sleep(500); } catch (InterruptedException ignored) {}
     }
 
     isPlaying = true;
@@ -1237,13 +1259,52 @@ public class MainActivity extends AppCompatActivity {
 
 
   private void resumePlaybackPcm() {
+    // 1. Reset system audio state and release SCO
+    try {
+      audioManager.setMode(AudioManager.MODE_NORMAL);
+      audioManager.setBluetoothScoOn(false);
+      audioManager.setSpeakerphoneOn(false);
+      if (Build.VERSION.SDK_INT >= 31) {
+        audioManager.clearCommunicationDevice();
+      } else {
+        audioManager.stopBluetoothSco();
+      }
+      Log.i(LOG_TAG, "Audio state reset to NORMAL, speakerphone OFF for playback");
+    } catch (Exception e) {
+      Log.e(LOG_TAG, "Error resetting audio state: " + e.getMessage());
+    }
+
+    // 2. Request Audio Focus (Crucial for system to route audio correctly)
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+      android.media.AudioFocusRequest focusRequest = new android.media.AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN)
+          .setAudioAttributes(new AudioAttributes.Builder()
+              .setUsage(AudioAttributes.USAGE_MEDIA)
+              .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
+              .build())
+          .build();
+      audioManager.requestAudioFocus(focusRequest);
+    } else {
+      audioManager.requestAudioFocus(null, AudioManager.STREAM_MUSIC, AudioManager.AUDIOFOCUS_GAIN);
+    }
+
+    // 3. Release existing AudioTrack
+    if (audioTrack != null) {
+      try {
+        audioTrack.stop();
+        audioTrack.release();
+      } catch (Exception ignored) {}
+      audioTrack = null;
+    }
+
+    // 4. Create new AudioTrack with standard MEDIA attributes
+    // Let the system handle routing automatically (usually more reliable than manual)
     int bufSize = AudioTrack.getMinBufferSize(SAMPLE_RATE,
         AudioFormat.CHANNEL_OUT_MONO, AudioFormat.ENCODING_PCM_16BIT);
 
     audioTrack = new AudioTrack.Builder()
         .setAudioAttributes(new AudioAttributes.Builder()
             .setUsage(AudioAttributes.USAGE_MEDIA)
-            .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+            .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
             .build())
         .setAudioFormat(new AudioFormat.Builder()
             .setSampleRate(SAMPLE_RATE)
@@ -1254,45 +1315,7 @@ public class MainActivity extends AppCompatActivity {
         .setTransferMode(AudioTrack.MODE_STREAM)
         .build();
 
-    // Route playback to Bluetooth if setting is "bluetooth"
-    String playDevice = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
-        .getString("play_device", "phone");
-    if ("bluetooth".equals(playDevice)) {
-      android.media.AudioDeviceInfo[] outputDevices =
-          audioManager.getDevices(AudioManager.GET_DEVICES_OUTPUTS);
-      android.media.AudioDeviceInfo btDevice = null;
-      // Prefer A2DP for high-quality media playback
-      for (android.media.AudioDeviceInfo device : outputDevices) {
-        if (device.getType() == android.media.AudioDeviceInfo.TYPE_BLUETOOTH_A2DP) {
-          btDevice = device;
-          break;
-        }
-      }
-      // If no A2DP, fall back to SCO
-      if (btDevice == null) {
-        for (android.media.AudioDeviceInfo device : outputDevices) {
-          if (device.getType() == android.media.AudioDeviceInfo.TYPE_BLUETOOTH_SCO) {
-            btDevice = device;
-            break;
-          }
-        }
-      }
-      if (btDevice != null) {
-        audioTrack.setPreferredDevice(btDevice);
-        Log.i(LOG_TAG, "Playback routed to BT: type=" + btDevice.getType()
-            + " name=" + btDevice.getProductName());
-      }
-    } else {
-      android.media.AudioDeviceInfo[] outputDevices =
-          audioManager.getDevices(AudioManager.GET_DEVICES_OUTPUTS);
-      for (android.media.AudioDeviceInfo device : outputDevices) {
-        if (device.getType() == android.media.AudioDeviceInfo.TYPE_BUILTIN_SPEAKER) {
-          audioTrack.setPreferredDevice(device);
-          break;
-        }
-      }
-    }
-
+    Log.i(LOG_TAG, "AudioTrack created with standard USAGE_MEDIA");
     audioTrack.play();
     playbackStartBytes = playbackPositionBytes;
 

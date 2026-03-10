@@ -6,7 +6,6 @@ import android.os.Bundle;
 import android.widget.Button;
 import android.widget.CheckBox;
 import android.widget.EditText;
-import android.widget.RadioButton;
 import android.widget.RadioGroup;
 import android.widget.SeekBar;
 import android.widget.TextView;
@@ -19,8 +18,6 @@ public class SettingsActivity extends AppCompatActivity {
     private static final String KEY_WEBHOOK_URL = "slack_webhook_url";
     private static final String KEY_MODEL_TYPE = "model_type";
     private static final String KEY_VIZ_TYPE = "viz_type";
-    private static final String KEY_MIC_DEVICE = "mic_device";
-    private static final String KEY_PLAY_DEVICE = "play_device";
     private static final String KEY_AEC = "audio_aec";
     private static final String KEY_NS = "audio_ns";
     private static final String KEY_AGC = "audio_agc";
@@ -57,24 +54,6 @@ public class SettingsActivity extends AppCompatActivity {
             vizGroup.check(R.id.radioSpectrogram);
         } else {
             vizGroup.check(R.id.radioWaveform);
-        }
-
-        // Mic device selection
-        RadioGroup micGroup = findViewById(R.id.micRadioGroup);
-        String currentMic = prefs.getString(KEY_MIC_DEVICE, "bluetooth");
-        if ("phone".equals(currentMic)) {
-            micGroup.check(R.id.radioMicPhone);
-        } else {
-            micGroup.check(R.id.radioMicBluetooth);
-        }
-
-        // Play device selection
-        RadioGroup playGroup = findViewById(R.id.playRadioGroup);
-        String currentPlay = prefs.getString(KEY_PLAY_DEVICE, "phone");
-        if ("bluetooth".equals(currentPlay)) {
-            playGroup.check(R.id.radioPlayBluetooth);
-        } else {
-            playGroup.check(R.id.radioPlayPhone);
         }
 
         // Audio processing checkboxes
@@ -140,7 +119,7 @@ public class SettingsActivity extends AppCompatActivity {
             @Override public void onStopTrackingTouch(SeekBar sb) {}
         });
 
-        // Result Font Size: SeekBar 0~10 → 10~20sp
+        // Result Font Size: SeekBar 0~10 → 15~22sp
         SeekBar resultFontSizeSeekBar = findViewById(R.id.resultFontSizeSeekBar);
         TextView resultFontSizeLabel = findViewById(R.id.resultFontSizeLabel);
         int savedFontSp = prefs.getInt(KEY_RESULT_FONT_SIZE, 18); // default 18sp (actual sp value)
@@ -171,15 +150,6 @@ public class SettingsActivity extends AppCompatActivity {
                 ? "spectrogram" : "waveform";
             prefs.edit().putString(KEY_VIZ_TYPE, newViz).apply();
 
-            // Save mic/play device
-            String newMic = micGroup.getCheckedRadioButtonId() == R.id.radioMicBluetooth
-                ? "bluetooth" : "phone";
-            prefs.edit().putString(KEY_MIC_DEVICE, newMic).apply();
-
-            String newPlay = playGroup.getCheckedRadioButtonId() == R.id.radioPlayBluetooth
-                ? "bluetooth" : "phone";
-            prefs.edit().putString(KEY_PLAY_DEVICE, newPlay).apply();
-
             // Save audio processing settings
             prefs.edit().putBoolean(KEY_AEC, checkAec.isChecked()).apply();
             prefs.edit().putBoolean(KEY_NS, checkNs.isChecked()).apply();
@@ -197,8 +167,6 @@ public class SettingsActivity extends AppCompatActivity {
                 changed = true;
             }
             result.putExtra("viz_type", newViz);
-            result.putExtra("mic_device", newMic);
-            result.putExtra("play_device", newPlay);
             changed = true;
             if (changed) {
                 setResult(RESULT_OK, result);

@@ -406,17 +406,18 @@ public class SpectrogramView extends View {
                     float viewMs = visibleSeconds * 1000f;
                     float bufferMs = lastRenderedVisibleSec * 1000f;
                     
+                    Rect dst = new Rect(0, 0, viewW, viewH);
                     if (Math.abs(scrollOffsetMs - lastRenderedOffsetMs) < 1.0f 
                             && Math.abs(viewMs - bufferMs) < 1.0f
                             && lastRenderedWidth == viewW) {
-                        canvas.drawBitmap(windowBitmap, 0, 0, bitmapPaint);
+                        canvas.drawBitmap(windowBitmap, null, dst, bitmapPaint);
                     } else {
                         // Transform the old buffer to fit current view while waiting for reload
                         float scale = bufferMs / viewMs;
                         float dx = (lastRenderedOffsetMs - scrollOffsetMs) * (viewW / viewMs);
                         canvas.save();
                         canvas.translate(dx, 0);
-                        canvas.scale(scale, 1.0f);
+                        canvas.scale(scale, (float) viewH / FREQ_BINS);
                         canvas.drawBitmap(windowBitmap, 0, 0, bitmapPaint);
                         canvas.restore();
                     }

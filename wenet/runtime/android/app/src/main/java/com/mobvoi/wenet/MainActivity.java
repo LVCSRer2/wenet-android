@@ -84,6 +84,7 @@ public class MainActivity extends AppCompatActivity {
 
   private boolean startRecord = false;
   private AudioRecord record = null;
+  private final Object lock = new Object();
   private int miniBufferSize = 0;
   private AcousticEchoCanceler aec = null;
   private NoiseSuppressor ns = null;
@@ -591,71 +592,78 @@ public class MainActivity extends AppCompatActivity {
     bluetoothScoOn = false;
   }
 
-  private void initRecorder() {
-    if (record != null) {
+  private boolean initRecorder() {
+    synchronized (lock) {
+      if (record != null) {
+        try {
+          record.stop();
+          record.release();
+        } catch (Exception ignored) {
+        } finally {
+          record = null;
+        }
+        // Small delay to let system free hardware resources
+        try { Thread.sleep(300); } catch (InterruptedException ignored) {}
+      }
+
+      miniBufferSize = AudioRecord.getMinBufferSize(SAMPLE_RATE,
+          AudioFormat.CHANNEL_IN_MONO,
+          AudioFormat.ENCODING_PCM_16BIT);
+      if (miniBufferSize == AudioRecord.ERROR || miniBufferSize == AudioRecord.ERROR_BAD_VALUE) {
+        Log.e(LOG_TAG, "Audio buffer can't initialize!");
+        return false;
+      }
       try {
-        record.stop();
-        record.release();
-      } catch (Exception ignored) {}
-      record = null;
-    }
-
-    miniBufferSize = AudioRecord.getMinBufferSize(SAMPLE_RATE,
-        AudioFormat.CHANNEL_IN_MONO,
-        AudioFormat.ENCODING_PCM_16BIT);
-    if (miniBufferSize == AudioRecord.ERROR || miniBufferSize == AudioRecord.ERROR_BAD_VALUE) {
-      Log.e(LOG_TAG, "Audio buffer can't initialize!");
-      return;
-    }
-    record = new AudioRecord(MediaRecorder.AudioSource.MIC,
-        SAMPLE_RATE,
-        AudioFormat.CHANNEL_IN_MONO,
-        AudioFormat.ENCODING_PCM_16BIT,
-        miniBufferSize);
-    if (record.getState() != AudioRecord.STATE_INITIALIZED) {
-      Log.e(LOG_TAG, "Audio Record can't initialize!");
-      return;
-    }
-
-    // Apply audio processing based on settings
-    android.content.SharedPreferences prefs =
-        getSharedPreferences(PREFS_NAME, MODE_PRIVATE);
-    int sessionId = record.getAudioSessionId();
-
-    boolean useAec = prefs.getBoolean("audio_aec", true);
-    if (AcousticEchoCanceler.isAvailable()) {
-      aec = AcousticEchoCanceler.create(sessionId);
-      if (aec != null) {
-        aec.setEnabled(useAec);
-        Log.i(LOG_TAG, "AEC " + (useAec ? "enabled" : "disabled"));
+        record = new AudioRecord(MediaRecorder.AudioSource.MIC,
+            SAMPLE_RATE,
+            AudioFormat.CHANNEL_IN_MONO,
+            AudioFormat.ENCODING_PCM_16BIT,
+            miniBufferSize);
+      } catch (Exception e) {
+        Log.e(LOG_TAG, "Failed to create AudioRecord: " + e.getMessage());
+        return false;
       }
-    } else {
-      Log.w(LOG_TAG, "AEC not available on this device");
-    }
 
-    boolean useNs = prefs.getBoolean("audio_ns", true);
-    if (NoiseSuppressor.isAvailable()) {
-      ns = NoiseSuppressor.create(sessionId);
-      if (ns != null) {
-        ns.setEnabled(useNs);
-        Log.i(LOG_TAG, "NS " + (useNs ? "enabled" : "disabled"));
+      if (record.getState() != AudioRecord.STATE_INITIALIZED) {
+        Log.e(LOG_TAG, "Audio Record can't initialize!");
+        return false;
       }
-    } else {
-      Log.w(LOG_TAG, "NS not available on this device");
-    }
 
-    boolean useAgc = prefs.getBoolean("audio_agc", true);
-    if (AutomaticGainControl.isAvailable()) {
-      agc = AutomaticGainControl.create(sessionId);
-      if (agc != null) {
-        agc.setEnabled(useAgc);
-        Log.i(LOG_TAG, "AGC " + (useAgc ? "enabled" : "disabled"));
+      // Apply audio processing based on settings
+      android.content.SharedPreferences prefs =
+          getSharedPreferences(PREFS_NAME, MODE_PRIVATE);
+      int sessionId = record.getAudioSessionId();
+
+      boolean useAec = prefs.getBoolean("audio_aec", true);
+      if (AcousticEchoCanceler.isAvailable()) {
+        aec = AcousticEchoCanceler.create(sessionId);
+        if (aec != null) {
+          aec.setEnabled(useAec);
+          Log.i(LOG_TAG, "AEC " + (useAec ? "enabled" : "disabled"));
+        }
       }
-    } else {
-      Log.w(LOG_TAG, "AGC not available on this device");
-    }
 
-    Log.i(LOG_TAG, "Record init okay");
+      boolean useNs = prefs.getBoolean("audio_ns", true);
+      if (NoiseSuppressor.isAvailable()) {
+        ns = NoiseSuppressor.create(sessionId);
+        if (ns != null) {
+          ns.setEnabled(useNs);
+          Log.i(LOG_TAG, "NS " + (useNs ? "enabled" : "disabled"));
+        }
+      }
+
+      boolean useAgc = prefs.getBoolean("audio_agc", true);
+      if (AutomaticGainControl.isAvailable()) {
+        agc = AutomaticGainControl.create(sessionId);
+        if (agc != null) {
+          agc.setEnabled(useAgc);
+          Log.i(LOG_TAG, "AGC " + (useAgc ? "enabled" : "disabled"));
+        }
+      }
+
+      Log.i(LOG_TAG, "Record init okay");
+      return true;
+    }
   }
 
   private void releaseAudioEffects() {
@@ -665,25 +673,39 @@ public class MainActivity extends AppCompatActivity {
   }
 
   private void startRecordThread() {
-    if (record == null) {
-      Log.e(LOG_TAG, "record is null, cannot start recording");
-      runOnUiThread(() -> Toast.makeText(this, "녹음 장치를 초기화할 수 없습니다.", Toast.LENGTH_SHORT).show());
-      startRecord = false;
-      return;
-    }
     new Thread(() -> {
-      try {
-        record.startRecording();
-      } catch (IllegalStateException e) {
-        Log.e(LOG_TAG, "Failed to start recording: " + e.getMessage());
+      if (!initRecorder()) {
+        runOnUiThread(() -> {
+          Toast.makeText(this, "녹음 장치를 초기화할 수 없습니다.", Toast.LENGTH_SHORT).show();
+          Button button = findViewById(R.id.button);
+          button.setText("Record");
+          button.setEnabled(true);
+        });
         startRecord = false;
         return;
       }
+
+      synchronized (lock) {
+        if (record == null) return;
+        try {
+          record.startRecording();
+        } catch (IllegalStateException e) {
+          Log.e(LOG_TAG, "Failed to start recording: " + e.getMessage());
+          startRecord = false;
+          return;
+        }
+      }
+
       Process.setThreadPriority(Process.THREAD_PRIORITY_AUDIO);
       short[] buffer = new short[miniBufferSize / 2];
       byte[] pcmBytes = new byte[miniBufferSize]; // pre-allocate for PCM write
       while (startRecord) {
-        int read = record.read(buffer, 0, buffer.length);
+        int read = 0;
+        synchronized (lock) {
+          if (record != null) {
+            read = record.read(buffer, 0, buffer.length);
+          }
+        }
         if (AudioRecord.ERROR_INVALID_OPERATION != read && read > 0) {
           // Save PCM to file
           if (pcmOutputStream != null) {
@@ -707,9 +729,18 @@ public class MainActivity extends AppCompatActivity {
           runOnUiThread(() -> button.setEnabled(true));
         }
       }
-      record.stop();
-      record.release();
-      record = null;
+      
+      synchronized (lock) {
+        if (record != null) {
+          try {
+            record.stop();
+            record.release();
+          } catch (Exception ignored) {
+          } finally {
+            record = null;
+          }
+        }
+      }
       releaseAudioEffects();
       stopBluetoothMic();
       if (useSpectrogram) {

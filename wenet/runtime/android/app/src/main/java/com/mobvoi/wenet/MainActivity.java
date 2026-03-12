@@ -841,10 +841,8 @@ public class MainActivity extends AppCompatActivity {
         @Override
         public void onSkippedSamples(int count) {
           Recognize.addSkippedSamples(count);
-          if (!needSnapshot[0]) {
-            // First skip after speech: push extra silence so WeNet detects endpoint immediately
-            Recognize.pushSilenceForEndpoint(8000); // 1 second of silence
-          }
+          // Removed manual Recognize.pushSilenceForEndpoint(8000) here 
+          // to prevent 1-second timestamp shifts in the final results.
           needSnapshot[0] = true;  // next speech chunk starts a new segment
         }
       };

@@ -14,6 +14,9 @@ import android.view.View;
 import android.widget.OverScroller;
 import java.io.File;
 import java.io.FileInputStream;
+import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
+import java.nio.channels.FileChannel;
 
 public class SpectrogramView extends View {
 
@@ -237,40 +240,41 @@ public class SpectrogramView extends View {
         bmp.eraseColor(Color.BLACK);
 
         try (FileInputStream fis = new FileInputStream(path)) {
-            // Calculate total samples needed for the entire visible window
-            int totalSamplesInWindow = (int) (visSec * SAMPLE_RATE);
-            // We need a bit more data at the end to satisfy the last FFT window
-            int samplesToRead = totalSamplesInWindow + FFT_SIZE;
-            
-            long startByte = (long) (offsetMs * SAMPLE_RATE * 2 / 1000.0) & -2L;
-            fis.skip(startByte);
-
-            // Read the entire segment into memory (small enough for 8kHz)
-            short[] segmentBuffer = new short[samplesToRead];
-            byte[] rawBytes = new byte[samplesToRead * 2];
-            int bytesRead = readStreamFully(fis, rawBytes);
-            int actualSamples = bytesRead / 2;
-            for (int i = 0; i < actualSamples; i++) {
-                segmentBuffer[i] = (short) ((rawBytes[i * 2] & 0xFF) | (rawBytes[i * 2 + 1] << 8));
-            }
+            FileChannel channel = fis.getChannel();
+            long totalFileSamples = file.length() / 2;
+            long startSampleGlobal = (long) (offsetMs * SAMPLE_RATE / 1000.0);
+            double totalSamplesInWindow = (double) visSec * SAMPLE_RATE;
+            double samplesPerColumn = totalSamplesInWindow / width;
 
             double[] wr = new double[FFT_SIZE], wi = new double[FFT_SIZE];
             int[] pr = new int[FREQ_BINS];
             double floor = dbFloor, ceil = dbCeil, range = Math.max(1.0, ceil - floor);
-            double samplesPerColumn = (double) totalSamplesInWindow / width;
+
+            // Reusable buffer for FFT_SIZE samples
+            ByteBuffer byteBuf = ByteBuffer.allocateDirect(FFT_SIZE * 2).order(ByteOrder.LITTLE_ENDIAN);
+            short[] shortBuf = new short[FFT_SIZE];
 
             for (int col = 0; col < width; col++) {
-                int startIdx = (int) (col * samplesPerColumn);
-                if (startIdx >= actualSamples) break;
+                long colStartSample = startSampleGlobal + (long) (col * samplesPerColumn);
+                if (colStartSample >= totalFileSamples) break;
 
-                // High-resolution: use full FFT_SIZE window from the segment buffer
-                int samplesInThisWindow = Math.min(FFT_SIZE, actualSamples - startIdx);
-                for (int i = 0; i < samplesInThisWindow; i++) {
-                    wr[i] = segmentBuffer[startIdx + i] * hannWindow[i];
+                // Seek and read exactly what we need for one FFT
+                channel.position(colStartSample * 2);
+                byteBuf.clear();
+                int bytesRead = channel.read(byteBuf);
+                if (bytesRead <= 0) break;
+                
+                byteBuf.flip();
+                int samplesRead = bytesRead / 2;
+                byteBuf.asShortBuffer().get(shortBuf, 0, samplesRead);
+
+                // Apply Hann window and process FFT
+                for (int i = 0; i < samplesRead; i++) {
+                    wr[i] = shortBuf[i] * hannWindow[i];
                     wi[i] = 0.0;
                 }
-                // Only pad with zeros if we actually ran out of file data
-                for (int i = samplesInThisWindow; i < FFT_SIZE; i++) wr[i] = wi[i] = 0.0;
+                // Pad with zeros if we ran out of file data
+                for (int i = samplesRead; i < FFT_SIZE; i++) wr[i] = wi[i] = 0.0;
 
                 fft(wr, wi, FFT_SIZE);
                 for (int k = 0; k < FREQ_BINS; k++) {

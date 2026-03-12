@@ -1141,8 +1141,8 @@ public class MainActivity extends AppCompatActivity {
       if (!f.exists() || f.length() == 0) return;
 
       long fileSize = f.length();
-      int totalSamples = (int) Math.min(fileSize / 2, Integer.MAX_VALUE);
-      int durationMs = (int) (fileSize / 2 * 1000L / SAMPLE_RATE);
+      long totalSamples = fileSize / 2;
+      long durationMs = totalSamples * 1000L / SAMPLE_RATE;
 
       if (useSpectrogram) {
         // setFullSpectrogramFromFile does its own streaming
@@ -1164,18 +1164,18 @@ public class MainActivity extends AppCompatActivity {
       } else {
         // Stream file to compute energy bars; cap to 10000 bars for performance
         final int MAX_BARS = 10000;
-        int samplesPerBar = Math.max(512, totalSamples / MAX_BARS);
-        int barCount = totalSamples / samplesPerBar;
+        long samplesPerBar = Math.max(512, totalSamples / MAX_BARS);
+        int barCount = (int) (totalSamples / samplesPerBar);
         if (barCount == 0) barCount = 1;
         double[] rawDb = new double[barCount];
         double maxDb = -999;
         try (FileInputStream fis = new FileInputStream(f)) {
-          byte[] chunk = new byte[samplesPerBar * 2];
+          byte[] chunk = new byte[(int) (samplesPerBar * 2)];
           for (int i = 0; i < barCount; i++) {
             int read = readPcmChunk(fis, chunk);
             if (read < chunk.length) break;
             double sum = 0;
-            for (int j = 0; j < samplesPerBar; j++) {
+            for (int j = 0; j < (int) samplesPerBar; j++) {
               short s = (short) ((chunk[j * 2] & 0xFF) | (chunk[j * 2 + 1] << 8));
               sum += (double) s * s;
             }
@@ -1192,7 +1192,7 @@ public class MainActivity extends AppCompatActivity {
           energies[i] = Math.max(0, Math.min(1.0, (rawDb[i] - floor) / range));
         }
         final double[] finalEnergies = energies;
-        final int finalDurationMs = durationMs;
+        final int finalDurationMs = (int) Math.min(durationMs, Integer.MAX_VALUE);
         runOnUiThread(() -> {
           VoiceRectView vv = findViewById(R.id.voiceRectView);
           vv.setFullWaveform(finalEnergies, finalDurationMs);

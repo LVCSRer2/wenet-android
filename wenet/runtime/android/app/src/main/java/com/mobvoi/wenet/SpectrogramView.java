@@ -36,23 +36,23 @@ public class SpectrogramView extends View {
     private boolean playbackMode = false;
     private float cursorFraction = -1f;
 
-    private int totalDurationMs = 0;
+    private long totalDurationMs = 0;
     private long totalSamples = 0;
     private float visibleSeconds = DEFAULT_VISIBLE_SECONDS;
-    private float scrollOffsetMs = 0f;
+    private double scrollOffsetMs = 0;
     private boolean userScrolling = false;
 
     // On-demand window rendering
     private String pcmFilePath = null;
     private volatile boolean windowLoading = false;
     private Bitmap windowBitmap = null;
-    private float lastRenderedOffsetMs = -100000f;
+    private double lastRenderedOffsetMs = -100000;
     private float lastRenderedVisibleSec = -1f;
     private int lastRenderedWidth = -1;
 
     // Touch handling
     private float touchStartX = 0;
-    private float touchStartOffsetMs = 0;
+    private double touchStartOffsetMs = 0;
     private VelocityTracker velocityTracker = null;
     private OverScroller scroller = null;
     private android.view.ScaleGestureDetector scaleDetector = null;
@@ -123,9 +123,9 @@ public class SpectrogramView extends View {
                     float viewW = getWidth();
                     if (viewW > 0) {
                         float focusFraction = focusX / viewW;
-                        float focusTimeMs = scrollOffsetMs + focusFraction * oldVisibleSec * 1000f;
+                        double focusTimeMs = scrollOffsetMs + focusFraction * oldVisibleSec * 1000.0;
                         visibleSeconds = newVisibleSec;
-                        scrollOffsetMs = focusTimeMs - focusFraction * visibleSeconds * 1000f;
+                        scrollOffsetMs = focusTimeMs - focusFraction * visibleSeconds * 1000.0;
                         clampScrollOffset();
                     } else {
                         visibleSeconds = newVisibleSec;
@@ -140,8 +140,8 @@ public class SpectrogramView extends View {
     }
 
     private void clampScrollOffset() {
-        float maxOffset = Math.max(0, totalDurationMs - visibleSeconds * 1000f);
-        scrollOffsetMs = Math.max(0, Math.min(maxOffset, scrollOffsetMs));
+        double maxOffset = Math.max(0.0, totalDurationMs - visibleSeconds * 1000.0);
+        scrollOffsetMs = Math.max(0.0, Math.min(maxOffset, scrollOffsetMs));
     }
 
     public void setOnPlaybackSeekListener(OnPlaybackSeekListener listener) {
@@ -184,19 +184,19 @@ public class SpectrogramView extends View {
 
     // --- Playback mode ---
 
-    public void setFullSpectrogramFromFile(String filePath, int totalSamplesCount) {
+    public void setFullSpectrogramFromFile(String filePath, long totalSamplesCount) {
         synchronized (lock) {
             pcmFilePath = filePath;
             totalSamples = totalSamplesCount;
-            totalDurationMs = (int) (totalSamples * 1000L / SAMPLE_RATE);
+            totalDurationMs = totalSamples * 1000L / SAMPLE_RATE;
             userScrolling = false;
             playbackMode = true;
             visibleSeconds = DEFAULT_VISIBLE_SECONDS;
-            scrollOffsetMs = 0f;
-            lastRenderedOffsetMs = -100000f;
+            scrollOffsetMs = 0.0;
+            lastRenderedOffsetMs = -100000.0;
             if (windowBitmap != null) { windowBitmap.recycle(); windowBitmap = null; }
             if (cursorFraction > 0f) {
-                scrollOffsetMs = Math.max(0, cursorFraction * totalDurationMs - (visibleSeconds * 1000f) / 4f);
+                scrollOffsetMs = Math.max(0.0, cursorFraction * totalDurationMs - (visibleSeconds * 1000.0) / 4.0);
                 clampScrollOffset();
             } else {
                 cursorFraction = 0f;
@@ -212,14 +212,14 @@ public class SpectrogramView extends View {
 
         synchronized (lock) {
             if (windowBitmap == null || lastRenderedWidth != viewW
-                    || Math.abs(scrollOffsetMs - lastRenderedOffsetMs) > (visibleSeconds * 1000f) / 10f
+                    || Math.abs(scrollOffsetMs - lastRenderedOffsetMs) > (visibleSeconds * 1000.0) / 10.0
                     || Math.abs(visibleSeconds - lastRenderedVisibleSec) > 0.01f) {
                 loadWindowAsync(scrollOffsetMs, visibleSeconds, viewW);
             }
         }
     }
 
-    private void loadWindowAsync(final float offsetMs, final float visSec, final int width) {
+    private void loadWindowAsync(final double offsetMs, final float visSec, final int width) {
         if (windowLoading) return;
         windowLoading = true;
         final String path = pcmFilePath;
@@ -230,7 +230,7 @@ public class SpectrogramView extends View {
         }).start();
     }
 
-    private void loadWindowSync(String path, float offsetMs, float visSec, int width) {
+    private void loadWindowSync(String path, double offsetMs, float visSec, int width) {
         if (path == null || width <= 0) return;
         File file = new File(path);
         if (!file.exists()) return;
@@ -311,9 +311,9 @@ public class SpectrogramView extends View {
     public void setCursorPosition(float fraction) {
         cursorFraction = fraction;
         if (playbackMode && totalDurationMs > 0 && !userScrolling) {
-            float cursorMs = fraction * totalDurationMs;
-            if (cursorMs < scrollOffsetMs || cursorMs >= scrollOffsetMs + visibleSeconds * 1000f) {
-                scrollOffsetMs = Math.max(0, cursorMs - (visibleSeconds * 1000f) / 4f);
+            double cursorMs = (double) fraction * totalDurationMs;
+            if (cursorMs < scrollOffsetMs || cursorMs >= scrollOffsetMs + visibleSeconds * 1000.0) {
+                scrollOffsetMs = Math.max(0.0, cursorMs - (visibleSeconds * 1000.0) / 4.0);
                 clampScrollOffset();
             }
         }
@@ -333,7 +333,7 @@ public class SpectrogramView extends View {
         playbackMode = false; cursorFraction = -1f; pcmFilePath = null;
         synchronized (lock) {
             if (windowBitmap != null) { windowBitmap.recycle(); windowBitmap = null; }
-            totalDurationMs = 0; scrollOffsetMs = 0f; userScrolling = false;
+            totalDurationMs = 0; scrollOffsetMs = 0.0; userScrolling = false;
         }
         clear();
     }
@@ -362,7 +362,7 @@ public class SpectrogramView extends View {
                 return true;
             case MotionEvent.ACTION_MOVE:
                 float deltaX = touchStartX - event.getX();
-                float msPerPx = (visibleSeconds * 1000f) / getWidth();
+                double msPerPx = (visibleSeconds * 1000.0) / getWidth();
                 scrollOffsetMs = touchStartOffsetMs + deltaX * msPerPx;
                 clampScrollOffset();
                 postInvalidate();
@@ -372,11 +372,11 @@ public class SpectrogramView extends View {
                 getParent().requestDisallowInterceptTouchEvent(false);
                 velocityTracker.computeCurrentVelocity(1000);
                 float vX = velocityTracker.getXVelocity();
-                float msPerPxUp = (visibleSeconds * 1000f) / getWidth();
+                double msPerPxUp = (visibleSeconds * 1000.0) / getWidth();
                 scroller.fling((int) scrollOffsetMs, 0, (int) (-vX * msPerPxUp), 0, 0, (int) Math.max(0, totalDurationMs - visibleSeconds * 1000f), 0, 0);
                 velocityTracker.recycle(); velocityTracker = null;
-                int seekMs = (int) (scrollOffsetMs + event.getX() * msPerPxUp);
-                if (seekListener != null) seekListener.onSeek(Math.max(0, Math.min(totalDurationMs, seekMs)));
+                long seekMs = (long) (scrollOffsetMs + event.getX() * msPerPxUp);
+                if (seekListener != null) seekListener.onSeek((int) Math.max(0, Math.min(totalDurationMs, seekMs)));
                 postInvalidate();
                 return true;
             case MotionEvent.ACTION_CANCEL:
@@ -407,28 +407,28 @@ public class SpectrogramView extends View {
             triggerWindowLoadIfNeeded();
             synchronized (lock) {
                 if (windowBitmap != null && !windowBitmap.isRecycled()) {
-                    float viewMs = visibleSeconds * 1000f;
-                    float bufferMs = lastRenderedVisibleSec * 1000f;
+                    double viewMs = visibleSeconds * 1000.0;
+                    double bufferMs = lastRenderedVisibleSec * 1000.0;
                     
                     Rect dst = new Rect(0, 0, viewW, viewH);
-                    if (Math.abs(scrollOffsetMs - lastRenderedOffsetMs) < 1.0f 
-                            && Math.abs(viewMs - bufferMs) < 1.0f
+                    if (Math.abs(scrollOffsetMs - lastRenderedOffsetMs) < 1.0 
+                            && Math.abs(viewMs - bufferMs) < 1.0
                             && lastRenderedWidth == viewW) {
                         canvas.drawBitmap(windowBitmap, null, dst, bitmapPaint);
                     } else {
                         // Transform the old buffer to fit current view while waiting for reload
-                        float scale = bufferMs / viewMs;
-                        float dx = (lastRenderedOffsetMs - scrollOffsetMs) * (viewW / viewMs);
+                        double scale = bufferMs / viewMs;
+                        double dx = (lastRenderedOffsetMs - scrollOffsetMs) * (viewW / viewMs);
                         canvas.save();
-                        canvas.translate(dx, 0);
-                        canvas.scale(scale, (float) viewH / FREQ_BINS);
+                        canvas.translate((float) dx, 0);
+                        canvas.scale((float) scale, (float) viewH / FREQ_BINS);
                         canvas.drawBitmap(windowBitmap, 0, 0, bitmapPaint);
                         canvas.restore();
                     }
                 }
             }
             if (cursorFraction >= 0f) {
-                float cx = (cursorFraction * totalDurationMs - scrollOffsetMs) / (visibleSeconds * 1000f) * viewW;
+                float cx = (float) ((cursorFraction * totalDurationMs - scrollOffsetMs) / (visibleSeconds * 1000.0) * viewW);
                 if (cx >= 0 && cx <= viewW) {
                     cursorPaint.setColor(0xFFFF0000);
                     cursorPaint.setStrokeWidth(3f);

@@ -904,8 +904,10 @@ public class MainActivity extends AppCompatActivity {
         } else {
           // Save result.json with timed result
           saveTimedResult();
-          // Compress PCM to Opus 6kbps in background
-          compressToOpusAsync(currentRecordingName);
+          // Compress PCM to Opus 6kbps (synchronous, runs in this background thread)
+          runOnUiThread(() -> Toast.makeText(MainActivity.this,
+              "인코딩 중...", Toast.LENGTH_LONG).show());
+          compressToOpus(currentRecordingName);
           // Build timestamped text for copy & Slack
           try {
             timestampedResult = buildTimestampedText(Recognize.getTimedResult());
@@ -936,12 +938,12 @@ public class MainActivity extends AppCompatActivity {
     }).start();
   }
 
-  private void compressToOpusAsync(String recordingName) {
+  private void compressToOpus(String recordingName) {
     if (android.os.Build.VERSION.SDK_INT < 29) {
       Log.i(LOG_TAG, "Opus encoding requires API 29+, skipping");
       return;
     }
-    new Thread(() -> {
+    {
       String pcmPath = RecordingManager.getPcmAudioPath(this, recordingName);
       String opusPath = RecordingManager.getOpusPath(this, recordingName);
       File pcmFile = new File(pcmPath);
@@ -1013,8 +1015,8 @@ public class MainActivity extends AppCompatActivity {
         }
         long opusSize = new File(opusPath).length();
         Log.i(LOG_TAG, "Opus compression done: " + opusSize / 1024 + " KB");
-        // Delete original PCM after successful compression (only if not currently in use)
-        if (opusSize > 0 && !pcmPath.equals(playbackAudioPath)) {
+        // Delete original PCM after successful compression
+        if (opusSize > 0) {
           new File(pcmPath).delete();
           Log.i(LOG_TAG, "Deleted original PCM: " + pcmPath);
         }
@@ -1026,10 +1028,14 @@ public class MainActivity extends AppCompatActivity {
         try { if (encoder != null) { encoder.stop(); encoder.release(); } } catch (Exception ignored) {}
         try { if (muxer != null) { muxer.stop(); muxer.release(); } } catch (Exception ignored) {}
       }
-    }).start();
+    }
   }
 
   private boolean decodeOpusToPcm(String opusPath, String pcmPath) {
+    return decodeOpusToPcm(opusPath, pcmPath, null);
+  }
+
+  private boolean decodeOpusToPcm(String opusPath, String pcmPath, java.util.function.Consumer<Integer> onProgress) {
     android.media.MediaExtractor extractor = null;
     android.media.MediaCodec decoder = null;
     java.io.FileOutputStream fos = null;
@@ -1050,6 +1056,8 @@ public class MainActivity extends AppCompatActivity {
       }
       if (trackIndex < 0) return false;
       extractor.selectTrack(trackIndex);
+      long totalDurationUs = trackFormat.containsKey(android.media.MediaFormat.KEY_DURATION)
+          ? trackFormat.getLong(android.media.MediaFormat.KEY_DURATION) : 0;
 
       decoder = android.media.MediaCodec.createDecoderByType(
           trackFormat.getString(android.media.MediaFormat.KEY_MIME));
@@ -1076,8 +1084,13 @@ public class MainActivity extends AppCompatActivity {
                   android.media.MediaCodec.BUFFER_FLAG_END_OF_STREAM);
               inputDone = true;
             } else {
-              decoder.queueInputBuffer(inIdx, 0, sampleSize, extractor.getSampleTime(), 0);
+              long sampleTimeUs = extractor.getSampleTime();
+              decoder.queueInputBuffer(inIdx, 0, sampleSize, sampleTimeUs, 0);
               extractor.advance();
+              if (onProgress != null && totalDurationUs > 0) {
+                int pct = (int) (sampleTimeUs * 100 / totalDurationUs);
+                onProgress.accept(pct);
+              }
             }
           }
         }
@@ -1360,33 +1373,46 @@ public class MainActivity extends AppCompatActivity {
     currentPlaybackRecording = recordingName;
     if (getSupportActionBar() != null) getSupportActionBar().setTitle(recordingName);
 
-    String pcmPath = RecordingManager.getAudioPath(this, recordingName);
     String opusPath = RecordingManager.getOpusPath(this, recordingName);
-    File pcmFile = new File(pcmPath);
     File opusFile = new File(opusPath);
 
-    if (!pcmFile.exists() && opusFile.exists()) {
-      // Decode OGG/Opus to temp PCM in cache, then enter playback
-      Toast.makeText(this, "오디오 디코딩 중...", Toast.LENGTH_SHORT).show();
-      new Thread(() -> {
-        String tempPcm = new File(getCacheDir(), recordingName + "_temp.pcm").getAbsolutePath();
-        boolean ok = decodeOpusToPcm(opusPath, tempPcm);
-        runOnUiThread(() -> {
-          if (ok) {
-            enterPlaybackModeWithPcm(recordingName, tempPcm);
-          } else {
-            Toast.makeText(this, "오디오 디코딩 실패", Toast.LENGTH_SHORT).show();
-          }
-        });
-      }).start();
-      return;
-    }
-
-    if (!pcmFile.exists()) {
+    if (!opusFile.exists()) {
       Toast.makeText(this, "Audio file not found", Toast.LENGTH_SHORT).show();
       return;
     }
-    enterPlaybackModeWithPcm(recordingName, pcmPath);
+    // Show decode progress dialog
+    android.app.AlertDialog.Builder builder = new android.app.AlertDialog.Builder(this);
+    android.view.View dialogView = getLayoutInflater().inflate(android.R.layout.activity_list_item, null);
+    android.widget.ProgressBar progressBar = new android.widget.ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal);
+    progressBar.setMax(100);
+    progressBar.setProgress(0);
+    android.widget.TextView progressText = new android.widget.TextView(this);
+    progressText.setText("0%");
+    progressText.setGravity(android.view.Gravity.CENTER);
+    android.widget.LinearLayout layout = new android.widget.LinearLayout(this);
+    layout.setOrientation(android.widget.LinearLayout.VERTICAL);
+    layout.setPadding(48, 32, 48, 16);
+    layout.addView(progressBar);
+    layout.addView(progressText);
+    builder.setTitle("오디오 디코딩 중...").setView(layout).setCancelable(false);
+    android.app.AlertDialog dialog = builder.create();
+    dialog.show();
+
+    new Thread(() -> {
+      String tempPcm = new File(getCacheDir(), recordingName + "_temp.pcm").getAbsolutePath();
+      boolean ok = decodeOpusToPcm(opusPath, tempPcm, pct -> runOnUiThread(() -> {
+        progressBar.setProgress(pct);
+        progressText.setText(pct + "%");
+      }));
+      runOnUiThread(() -> {
+        dialog.dismiss();
+        if (ok) {
+          enterPlaybackModeWithPcm(recordingName, tempPcm);
+        } else {
+          Toast.makeText(this, "오디오 디코딩 실패", Toast.LENGTH_SHORT).show();
+        }
+      });
+    }).start();
   }
 
   private void enterPlaybackModeWithPcm(String recordingName, String audioPath) {
@@ -2023,7 +2049,28 @@ public class MainActivity extends AppCompatActivity {
           int s = (int)(totalSec % 60);
           durationView.setText(String.format("[%02d:%02d:%02d]", h, m, s));
         } else {
-          durationView.setText("");
+          File opusFile = new File(RecordingManager.getOpusPath(MainActivity.this, sr.name));
+          if (opusFile.exists()) {
+            try {
+              android.media.MediaMetadataRetriever mmr = new android.media.MediaMetadataRetriever();
+              mmr.setDataSource(opusFile.getAbsolutePath());
+              String durStr = mmr.extractMetadata(android.media.MediaMetadataRetriever.METADATA_KEY_DURATION);
+              mmr.release();
+              if (durStr != null) {
+                long totalSec = Long.parseLong(durStr) / 1000;
+                int h = (int)(totalSec / 3600);
+                int m = (int)((totalSec % 3600) / 60);
+                int s = (int)(totalSec % 60);
+                durationView.setText(String.format("[%02d:%02d:%02d]", h, m, s));
+              } else {
+                durationView.setText("");
+              }
+            } catch (Exception e) {
+              durationView.setText("");
+            }
+          } else {
+            durationView.setText("");
+          }
         }
         // Highlight currently selected recording
         if (sr.name.equals(currentPlaybackRecording)) {

@@ -155,6 +155,7 @@ public class MainActivity extends AppCompatActivity {
   private int cachedInProgressStartMs = -1;
   private String lastPartialText = "";
   private String lastDisplayedText = "";
+  private int lastAppendedConfirmedLength = 0; // chars from cachedConfirmedText already in TextView
   private String currentRecordingName = null;
   private FileOutputStream pcmOutputStream = null;
 
@@ -260,7 +261,7 @@ public class MainActivity extends AppCompatActivity {
     }
 
     TextView textView = findViewById(R.id.textView);
-    textView.setText("");
+    textView.setText("", TextView.BufferType.EDITABLE);
     // No LinkMovementMethod: avoids DynamicLayout (slow scroll). Touch handled manually below.
     textView.setOnTouchListener(new android.view.View.OnTouchListener() {
       private float tapStartX, tapStartY;
@@ -370,6 +371,8 @@ public class MainActivity extends AppCompatActivity {
         cachedInProgressStartMs = -1;
         lastPartialText = "";
         lastDisplayedText = "";
+        lastAppendedConfirmedLength = 0;
+        ((TextView) findViewById(R.id.textView)).setText("", TextView.BufferType.EDITABLE);
         startRecordThread();
         startAsrThread();
         Recognize.startDecode();
@@ -876,8 +879,7 @@ public class MainActivity extends AppCompatActivity {
           boolean endpointFired = Recognize.hasNewEndpoint();
           if (endpointFired || now - lastUiUpdate >= UI_UPDATE_INTERVAL_MS) {
             lastUiUpdate = now;
-            final String d = buildLiveDisplay();
-            runOnUiThread(() -> updateResultAndScroll(d));
+            updateLiveDisplayIncremental();
           }
         } catch (InterruptedException e) {
           Log.e(LOG_TAG, e.getMessage());
@@ -891,8 +893,7 @@ public class MainActivity extends AppCompatActivity {
       }
 
       // Final UI update after loop ends
-      final String finalDisplay = buildLiveDisplay();
-      runOnUiThread(() -> updateResultAndScroll(finalDisplay));
+      updateLiveDisplayIncremental();
 
       // Wait for final result — show processing indicator
       runOnUiThread(() -> Toast.makeText(MainActivity.this,
@@ -951,6 +952,80 @@ public class MainActivity extends AppCompatActivity {
   }
 
   /** Build live display using delta APIs: only new tokens from native, O(1) JNI cost. */
+  private void updateLiveDisplayIncremental() {
+    try {
+      // Process delta tokens (same logic as buildLiveDisplay)
+      String deltaJson = Recognize.getTimedResultDelta();
+      if (deltaJson != null && !"[]".equals(deltaJson)) {
+        org.json.JSONArray arr = new org.json.JSONArray(deltaJson);
+        for (int i = 0; i < arr.length(); i++) {
+          org.json.JSONObject obj = arr.getJSONObject(i);
+          String w = obj.getString("w");
+          int startMs = obj.getInt("s");
+          if ("\n".equals(w)) {
+            if (cachedInProgressSentence.length() > 0) {
+              cachedConfirmedText.append("[").append(formatTimeMs(cachedInProgressStartMs)).append("] ")
+                  .append(cachedInProgressSentence.toString().trim()).append("\n");
+              cachedInProgressSentence = new StringBuilder();
+              cachedInProgressStartMs = -1;
+            }
+            continue;
+          }
+          if (cachedInProgressStartMs == -1) cachedInProgressStartMs = startMs;
+          if ("\u2581".equals(w)) {
+            cachedInProgressSentence.append(" ");
+          } else {
+            cachedInProgressSentence.append(w);
+          }
+        }
+      }
+
+      // Build tail: in-progress sentence + partial
+      String deltaResult = Recognize.getResultDelta();
+      String partial = "";
+      if (deltaResult != null) {
+        int sep = deltaResult.indexOf('\n');
+        if (sep >= 0) partial = deltaResult.substring(sep + 1).trim();
+      }
+      lastPartialText = partial;
+
+      StringBuilder tail = new StringBuilder();
+      if (cachedInProgressSentence.length() > 0) {
+        tail.append("[").append(formatTimeMs(cachedInProgressStartMs)).append("] ")
+            .append(cachedInProgressSentence.toString().trim());
+      }
+      if (!partial.isEmpty()) {
+        if (tail.length() > 0) tail.append("\n");
+        tail.append(partial);
+      }
+      final String tailStr = tail.toString();
+      final int newConfirmedLen = cachedConfirmedText.length();
+
+      runOnUiThread(() -> {
+        TextView textView = findViewById(R.id.textView);
+        ScrollView scrollView = findViewById(R.id.scrollView);
+        android.text.Editable editable = textView.getEditableText();
+        if (editable == null) return;
+
+        // Append only new confirmed sentences (O(delta))
+        if (newConfirmedLen > lastAppendedConfirmedLength) {
+          String newConfirmed = cachedConfirmedText.substring(lastAppendedConfirmedLength, newConfirmedLen);
+          editable.replace(lastAppendedConfirmedLength, editable.length(), newConfirmed + tailStr);
+          lastAppendedConfirmedLength = newConfirmedLen;
+        } else {
+          // Only tail changed: replace from confirmed end to view end (O(tail))
+          editable.replace(lastAppendedConfirmedLength, editable.length(), tailStr);
+        }
+
+        boolean atBottom = (scrollView.getChildAt(0).getBottom()
+            - scrollView.getHeight() - scrollView.getScrollY()) < 100;
+        if (atBottom) scrollView.post(() -> scrollView.fullScroll(ScrollView.FOCUS_DOWN));
+      });
+    } catch (Exception e) {
+      Log.e(LOG_TAG, "Error in updateLiveDisplayIncremental: " + e.getMessage());
+    }
+  }
+
   private String buildLiveDisplay() {
     try {
       // Get only NEW timed tokens from native (O(delta) not O(total))

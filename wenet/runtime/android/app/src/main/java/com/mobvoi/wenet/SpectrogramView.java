@@ -56,6 +56,9 @@ public class SpectrogramView extends View {
     private VelocityTracker velocityTracker = null;
     private OverScroller scroller = null;
     private android.view.ScaleGestureDetector scaleDetector = null;
+    private boolean wasDragged = false;   // true if finger moved beyond tap threshold
+    private boolean pinchOccurred = false; // true if pinch zoom happened in this touch sequence
+    private static final float TAP_THRESHOLD_PX = 10f;
     private OnPlaybackSeekListener seekListener = null;
 
     public interface OnPlaybackSeekListener {
@@ -108,6 +111,7 @@ public class SpectrogramView extends View {
             @Override
             public boolean onScale(android.view.ScaleGestureDetector detector) {
                 if (!playbackMode || totalDurationMs <= 0) return false;
+                pinchOccurred = true;
 
                 float oldVisibleSec = visibleSeconds;
                 float factor = detector.getScaleFactor();
@@ -358,10 +362,13 @@ public class SpectrogramView extends View {
                 userScrolling = true;
                 touchStartX = event.getX();
                 touchStartOffsetMs = scrollOffsetMs;
+                wasDragged = false;
+                pinchOccurred = false;
                 getParent().requestDisallowInterceptTouchEvent(true);
                 return true;
             case MotionEvent.ACTION_MOVE:
                 float deltaX = touchStartX - event.getX();
+                if (Math.abs(deltaX) > TAP_THRESHOLD_PX) wasDragged = true;
                 double msPerPx = (visibleSeconds * 1000.0) / getWidth();
                 scrollOffsetMs = touchStartOffsetMs + deltaX * msPerPx;
                 clampScrollOffset();
@@ -373,10 +380,15 @@ public class SpectrogramView extends View {
                 velocityTracker.computeCurrentVelocity(1000);
                 float vX = velocityTracker.getXVelocity();
                 double msPerPxUp = (visibleSeconds * 1000.0) / getWidth();
-                scroller.fling((int) scrollOffsetMs, 0, (int) (-vX * msPerPxUp), 0, 0, (int) Math.max(0, totalDurationMs - visibleSeconds * 1000f), 0, 0);
+                if (wasDragged) {
+                    scroller.fling((int) scrollOffsetMs, 0, (int) (-vX * msPerPxUp), 0, 0, (int) Math.max(0, totalDurationMs - visibleSeconds * 1000f), 0, 0);
+                }
                 velocityTracker.recycle(); velocityTracker = null;
-                long seekMs = (long) (scrollOffsetMs + event.getX() * msPerPxUp);
-                if (seekListener != null) seekListener.onSeek((int) Math.max(0, Math.min(totalDurationMs, seekMs)));
+                // Only seek on tap (not drag, not pinch)
+                if (!wasDragged && !pinchOccurred && seekListener != null) {
+                    long seekMs = (long) (scrollOffsetMs + event.getX() * msPerPxUp);
+                    seekListener.onSeek((int) Math.max(0, Math.min(totalDurationMs, seekMs)));
+                }
                 postInvalidate();
                 return true;
             case MotionEvent.ACTION_CANCEL:

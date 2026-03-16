@@ -904,6 +904,8 @@ public class MainActivity extends AppCompatActivity {
         } else {
           // Save result.json with timed result
           saveTimedResult();
+          // Compress PCM to Opus 6kbps in background
+          compressToOpusAsync(currentRecordingName);
           // Build timestamped text for copy & Slack
           try {
             timestampedResult = buildTimestampedText(Recognize.getTimedResult());
@@ -932,6 +934,199 @@ public class MainActivity extends AppCompatActivity {
         }
       }
     }).start();
+  }
+
+  private void compressToOpusAsync(String recordingName) {
+    if (android.os.Build.VERSION.SDK_INT < 29) {
+      Log.i(LOG_TAG, "Opus encoding requires API 29+, skipping");
+      return;
+    }
+    new Thread(() -> {
+      String pcmPath = RecordingManager.getPcmAudioPath(this, recordingName);
+      String opusPath = RecordingManager.getOpusPath(this, recordingName);
+      File pcmFile = new File(pcmPath);
+      if (!pcmFile.exists() || pcmFile.length() == 0) return;
+
+      android.media.MediaCodec encoder = null;
+      android.media.MediaMuxer muxer = null;
+      FileInputStream fis = null;
+      try {
+        Log.i(LOG_TAG, "Opus compression started: " + opusPath);
+
+        android.media.MediaFormat fmt = android.media.MediaFormat.createAudioFormat(
+            "audio/opus", SAMPLE_RATE, 1);
+        fmt.setInteger(android.media.MediaFormat.KEY_BIT_RATE, 6000);
+
+        encoder = android.media.MediaCodec.createEncoderByType("audio/opus");
+        encoder.configure(fmt, null, null, android.media.MediaCodec.CONFIGURE_FLAG_ENCODE);
+        encoder.start();
+
+        muxer = new android.media.MediaMuxer(
+            opusPath, android.media.MediaMuxer.OutputFormat.MUXER_OUTPUT_OGG);
+
+        fis = new FileInputStream(pcmFile);
+
+        // 20ms frame at 8kHz: 160 samples = 320 bytes
+        final int FRAME_BYTES = SAMPLE_RATE * 2 * 20 / 1000;
+        byte[] pcmBuf = new byte[FRAME_BYTES];
+        android.media.MediaCodec.BufferInfo info = new android.media.MediaCodec.BufferInfo();
+        int trackIndex = -1;
+        boolean muxerStarted = false;
+        boolean inputDone = false;
+        boolean outputDone = false;
+        long presentationUs = 0;
+
+        while (!outputDone) {
+          if (!inputDone) {
+            int inIdx = encoder.dequeueInputBuffer(10000);
+            if (inIdx >= 0) {
+              java.nio.ByteBuffer inBuf = encoder.getInputBuffer(inIdx);
+              inBuf.clear();
+              int bytesRead = readPcmChunk(fis, pcmBuf);
+              if (bytesRead <= 0) {
+                encoder.queueInputBuffer(inIdx, 0, 0, presentationUs,
+                    android.media.MediaCodec.BUFFER_FLAG_END_OF_STREAM);
+                inputDone = true;
+              } else {
+                inBuf.put(pcmBuf, 0, bytesRead);
+                encoder.queueInputBuffer(inIdx, 0, bytesRead, presentationUs, 0);
+                presentationUs += (long) bytesRead * 1000000 / (SAMPLE_RATE * 2);
+              }
+            }
+          }
+          int outIdx = encoder.dequeueOutputBuffer(info, 10000);
+          if (outIdx == android.media.MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
+            trackIndex = muxer.addTrack(encoder.getOutputFormat());
+            muxer.start();
+            muxerStarted = true;
+          } else if (outIdx >= 0) {
+            if ((info.flags & android.media.MediaCodec.BUFFER_FLAG_END_OF_STREAM) != 0)
+              outputDone = true;
+            if (muxerStarted && info.size > 0) {
+              java.nio.ByteBuffer outBuf = encoder.getOutputBuffer(outIdx);
+              outBuf.position(info.offset);
+              outBuf.limit(info.offset + info.size);
+              muxer.writeSampleData(trackIndex, outBuf, info);
+            }
+            encoder.releaseOutputBuffer(outIdx, false);
+          }
+        }
+        long opusSize = new File(opusPath).length();
+        Log.i(LOG_TAG, "Opus compression done: " + opusSize / 1024 + " KB");
+        // Delete original PCM after successful compression (only if not currently in use)
+        if (opusSize > 0 && !pcmPath.equals(playbackAudioPath)) {
+          new File(pcmPath).delete();
+          Log.i(LOG_TAG, "Deleted original PCM: " + pcmPath);
+        }
+      } catch (Exception e) {
+        Log.e(LOG_TAG, "Opus compression failed: " + e.getMessage());
+        new File(opusPath).delete();
+      } finally {
+        try { if (fis != null) fis.close(); } catch (Exception ignored) {}
+        try { if (encoder != null) { encoder.stop(); encoder.release(); } } catch (Exception ignored) {}
+        try { if (muxer != null) { muxer.stop(); muxer.release(); } } catch (Exception ignored) {}
+      }
+    }).start();
+  }
+
+  private boolean decodeOpusToPcm(String opusPath, String pcmPath) {
+    android.media.MediaExtractor extractor = null;
+    android.media.MediaCodec decoder = null;
+    java.io.FileOutputStream fos = null;
+    try {
+      extractor = new android.media.MediaExtractor();
+      extractor.setDataSource(opusPath);
+
+      // Find audio track
+      int trackIndex = -1;
+      android.media.MediaFormat trackFormat = null;
+      for (int i = 0; i < extractor.getTrackCount(); i++) {
+        android.media.MediaFormat fmt = extractor.getTrackFormat(i);
+        if (fmt.getString(android.media.MediaFormat.KEY_MIME).startsWith("audio/")) {
+          trackIndex = i;
+          trackFormat = fmt;
+          break;
+        }
+      }
+      if (trackIndex < 0) return false;
+      extractor.selectTrack(trackIndex);
+
+      decoder = android.media.MediaCodec.createDecoderByType(
+          trackFormat.getString(android.media.MediaFormat.KEY_MIME));
+      decoder.configure(trackFormat, null, null, 0);
+      decoder.start();
+
+      fos = new java.io.FileOutputStream(pcmPath);
+      android.media.MediaCodec.BufferInfo info = new android.media.MediaCodec.BufferInfo();
+      boolean inputDone = false;
+      boolean outputDone = false;
+      // Output format: detected after INFO_OUTPUT_FORMAT_CHANGED
+      int outSampleRate = SAMPLE_RATE; // default; updated when format changes
+      int outChannels = 1;             // default; updated when format changes
+
+      while (!outputDone) {
+        if (!inputDone) {
+          int inIdx = decoder.dequeueInputBuffer(10000);
+          if (inIdx >= 0) {
+            java.nio.ByteBuffer inBuf = decoder.getInputBuffer(inIdx);
+            inBuf.clear();
+            int sampleSize = extractor.readSampleData(inBuf, 0);
+            if (sampleSize < 0) {
+              decoder.queueInputBuffer(inIdx, 0, 0, 0,
+                  android.media.MediaCodec.BUFFER_FLAG_END_OF_STREAM);
+              inputDone = true;
+            } else {
+              decoder.queueInputBuffer(inIdx, 0, sampleSize, extractor.getSampleTime(), 0);
+              extractor.advance();
+            }
+          }
+        }
+        int outIdx = decoder.dequeueOutputBuffer(info, 10000);
+        if (outIdx == android.media.MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
+          android.media.MediaFormat newFmt = decoder.getOutputFormat();
+          outSampleRate = newFmt.getInteger(android.media.MediaFormat.KEY_SAMPLE_RATE);
+          outChannels = newFmt.getInteger(android.media.MediaFormat.KEY_CHANNEL_COUNT);
+          Log.i(LOG_TAG, "Decoder output format: " + outSampleRate + "Hz ch=" + outChannels);
+        } else if (outIdx >= 0) {
+          if ((info.flags & android.media.MediaCodec.BUFFER_FLAG_END_OF_STREAM) != 0)
+            outputDone = true;
+          if (info.size > 0) {
+            java.nio.ByteBuffer outBuf = decoder.getOutputBuffer(outIdx);
+            outBuf.position(info.offset);
+            outBuf.limit(info.offset + info.size);
+            byte[] pcmBytes = new byte[info.size];
+            outBuf.get(pcmBytes);
+            // Downsample to SAMPLE_RATE (8kHz) if needed
+            int decimation = (outSampleRate > SAMPLE_RATE) ? (outSampleRate / SAMPLE_RATE) : 1;
+            int bytesPerSample = 2; // 16-bit PCM
+            int frameBytes = bytesPerSample * outChannels;
+            if (decimation == 1 && outChannels == 1) {
+              fos.write(pcmBytes);
+            } else {
+              // Pick one sample per 'decimation' frames, left channel only
+              java.io.ByteArrayOutputStream baos = new java.io.ByteArrayOutputStream();
+              for (int i = 0; i + frameBytes <= pcmBytes.length; i += frameBytes * decimation) {
+                // Write left channel (bytes 0-1 of frame)
+                baos.write(pcmBytes[i]);
+                baos.write(pcmBytes[i + 1]);
+              }
+              fos.write(baos.toByteArray());
+            }
+          }
+          decoder.releaseOutputBuffer(outIdx, false);
+        }
+      }
+      Log.i(LOG_TAG, "Opus decoded to PCM: " + new File(pcmPath).length() / 1024 + " KB");
+      return true;
+    } catch (Exception e) {
+      Log.e(LOG_TAG, "decodeOpusToPcm failed: " + e.getMessage());
+      new File(pcmPath).delete();
+      return false;
+    } finally {
+      try { if (fos != null) fos.close(); } catch (Exception ignored) {}
+      try { if (decoder != null) { decoder.stop(); decoder.release(); } } catch (Exception ignored) {}
+      try { if (extractor != null) extractor.release(); } catch (Exception ignored) {}
+    }
   }
 
   private void saveTimedResult() {
@@ -1165,12 +1360,37 @@ public class MainActivity extends AppCompatActivity {
     currentPlaybackRecording = recordingName;
     if (getSupportActionBar() != null) getSupportActionBar().setTitle(recordingName);
 
-    String audioPath = RecordingManager.getAudioPath(this, recordingName);
-    File audioFile = new File(audioPath);
-    if (!audioFile.exists()) {
+    String pcmPath = RecordingManager.getAudioPath(this, recordingName);
+    String opusPath = RecordingManager.getOpusPath(this, recordingName);
+    File pcmFile = new File(pcmPath);
+    File opusFile = new File(opusPath);
+
+    if (!pcmFile.exists() && opusFile.exists()) {
+      // Decode OGG/Opus to temp PCM in cache, then enter playback
+      Toast.makeText(this, "오디오 디코딩 중...", Toast.LENGTH_SHORT).show();
+      new Thread(() -> {
+        String tempPcm = new File(getCacheDir(), recordingName + "_temp.pcm").getAbsolutePath();
+        boolean ok = decodeOpusToPcm(opusPath, tempPcm);
+        runOnUiThread(() -> {
+          if (ok) {
+            enterPlaybackModeWithPcm(recordingName, tempPcm);
+          } else {
+            Toast.makeText(this, "오디오 디코딩 실패", Toast.LENGTH_SHORT).show();
+          }
+        });
+      }).start();
+      return;
+    }
+
+    if (!pcmFile.exists()) {
       Toast.makeText(this, "Audio file not found", Toast.LENGTH_SHORT).show();
       return;
     }
+    enterPlaybackModeWithPcm(recordingName, pcmPath);
+  }
+
+  private void enterPlaybackModeWithPcm(String recordingName, String audioPath) {
+    File audioFile = new File(audioPath);
 
     playbackAudioPath = audioPath;
     pcmFileLength = audioFile.length();

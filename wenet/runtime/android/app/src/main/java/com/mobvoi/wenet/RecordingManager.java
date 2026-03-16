@@ -59,6 +59,10 @@ public class RecordingManager {
     return new File(new File(getRecordingsRoot(context), name), "result.json").getAbsolutePath();
   }
 
+  public static String getOpusPath(Context context, String name) {
+    return new File(new File(getRecordingsRoot(context), name), "audio.ogg").getAbsolutePath();
+  }
+
   /** Load recognition text from result.json (words joined). */
   public static String loadResultText(Context context, String name) {
     try {

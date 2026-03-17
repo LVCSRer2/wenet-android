@@ -48,8 +48,8 @@ public interface PcmDataSource {
     public int read(long sampleOffset, short[] dst, int count) {
       try {
         ByteBuffer buf = ByteBuffer.allocate(count * 2).order(ByteOrder.LITTLE_ENDIAN);
-        channel.position(sampleOffset * 2);
-        int bytesRead = channel.read(buf);
+        // Positional read: thread-safe (no shared position state)
+        int bytesRead = channel.read(buf, sampleOffset * 2);
         if (bytesRead <= 0) return 0;
         buf.flip();
         int samplesRead = bytesRead / 2;

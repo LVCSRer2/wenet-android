@@ -248,40 +248,51 @@ public class SpectrogramView extends View {
         }
         if (src == null || width <= 0) return;
 
-        Bitmap bmp = Bitmap.createBitmap(width, FREQ_BINS, Bitmap.Config.ARGB_8888);
+        final Bitmap bmp = Bitmap.createBitmap(width, FREQ_BINS, Bitmap.Config.ARGB_8888);
         bmp.eraseColor(Color.BLACK);
 
-        long startSampleGlobal = (long) (offsetMs * SAMPLE_RATE / 1000.0);
-        double totalSamplesInWindow = (double) visSec * SAMPLE_RATE;
-        double samplesPerColumn = totalSamplesInWindow / width;
+        final long startSampleGlobal = (long) (offsetMs * SAMPLE_RATE / 1000.0);
+        final double samplesPerColumn = (double) visSec * SAMPLE_RATE / width;
+        final double floor = dbFloor, range = Math.max(1.0, dbCeil - floor);
 
-        double[] wr = new double[FFT_SIZE], wi = new double[FFT_SIZE];
-        int[] pr = new int[FREQ_BINS];
-        double floor = dbFloor, ceil = dbCeil, range = Math.max(1.0, ceil - floor);
-        short[] shortBuf = new short[FFT_SIZE];
+        // Pre-warm cache for OggPcmDataSource (triggers decodeWindow once, single-threaded)
+        short[] warmBuf = new short[FFT_SIZE];
+        src.read(startSampleGlobal, warmBuf, FFT_SIZE);
 
-        for (int col = 0; col < width; col++) {
-            long colStartSample = startSampleGlobal + (long) (col * samplesPerColumn);
-            if (colStartSample >= totalFileSamples) break;
+        // Parallel FFT: split columns across N worker threads
+        int nThreads = Math.min(4, Runtime.getRuntime().availableProcessors());
+        java.util.concurrent.CountDownLatch latch = new java.util.concurrent.CountDownLatch(nThreads);
+        int colsPerThread = (width + nThreads - 1) / nThreads;
 
-            int samplesRead = src.read(colStartSample, shortBuf, FFT_SIZE);
-            if (samplesRead <= 0) break;
-
-            for (int i = 0; i < samplesRead; i++) {
-                wr[i] = shortBuf[i] * hannWindow[i];
-                wi[i] = 0.0;
-            }
-            for (int i = samplesRead; i < FFT_SIZE; i++) wr[i] = wi[i] = 0.0;
-
-            fft(wr, wi, FFT_SIZE);
-            for (int k = 0; k < FREQ_BINS; k++) {
-                double mag = Math.sqrt(wr[k] * wr[k] + wi[k] * wi[k]) / FFT_SIZE;
-                double db = 20.0 * Math.log10(mag + 1e-10);
-                double norm = Math.max(0.0, Math.min(1.0, (db - floor) / range));
-                pr[FREQ_BINS - 1 - k] = heatmapColor(norm);
-            }
-            bmp.setPixels(pr, 0, 1, col, 0, 1, FREQ_BINS);
+        for (int t = 0; t < nThreads; t++) {
+            final int startCol = t * colsPerThread;
+            final int endCol = Math.min(startCol + colsPerThread, width);
+            final PcmDataSource srcFinal = src;
+            new Thread(() -> {
+                double[] wr = new double[FFT_SIZE], wi = new double[FFT_SIZE];
+                int[] pr = new int[FREQ_BINS];
+                short[] buf = new short[FFT_SIZE];
+                for (int col = startCol; col < endCol; col++) {
+                    long colStart = startSampleGlobal + (long) (col * samplesPerColumn);
+                    if (colStart >= totalFileSamples) break;
+                    int n = srcFinal.read(colStart, buf, FFT_SIZE);
+                    if (n <= 0) break;
+                    for (int i = 0; i < n; i++) { wr[i] = buf[i] * hannWindow[i]; wi[i] = 0.0; }
+                    for (int i = n; i < FFT_SIZE; i++) wr[i] = wi[i] = 0.0;
+                    fft(wr, wi, FFT_SIZE);
+                    for (int k = 0; k < FREQ_BINS; k++) {
+                        double mag = Math.sqrt(wr[k] * wr[k] + wi[k] * wi[k]) / FFT_SIZE;
+                        double db = 20.0 * Math.log10(mag + 1e-10);
+                        double norm = Math.max(0.0, Math.min(1.0, (db - floor) / range));
+                        pr[FREQ_BINS - 1 - k] = heatmapColor(norm);
+                    }
+                    bmp.setPixels(pr, 0, 1, col, 0, 1, FREQ_BINS);
+                }
+                latch.countDown();
+            }).start();
         }
+
+        try { latch.await(); } catch (InterruptedException ignored) {}
 
         synchronized (lock) {
             if (windowBitmap != null) windowBitmap.recycle();

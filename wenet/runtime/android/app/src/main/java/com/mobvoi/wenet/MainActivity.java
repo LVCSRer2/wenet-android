@@ -907,7 +907,7 @@ public class MainActivity extends AppCompatActivity {
           // Save result.json with timed result
           saveTimedResult();
           // Compress PCM to Opus 6kbps (synchronous, runs in this background thread)
-          compressToOpus(currentRecordingName);
+          compressToAac(currentRecordingName);
           // Build timestamped text for copy & Slack
           try {
             timestampedResult = buildTimestampedText(Recognize.getTimedResult());
@@ -938,14 +938,10 @@ public class MainActivity extends AppCompatActivity {
     }).start();
   }
 
-  private void compressToOpus(String recordingName) {
-    if (android.os.Build.VERSION.SDK_INT < 29) {
-      Log.i(LOG_TAG, "Opus encoding requires API 29+, skipping");
-      return;
-    }
+  private void compressToAac(String recordingName) {
     {
       String pcmPath = RecordingManager.getPcmAudioPath(this, recordingName);
-      String opusPath = RecordingManager.getOpusPath(this, recordingName);
+      String aacPath = RecordingManager.getAacPath(this, recordingName);
       File pcmFile = new File(pcmPath);
       if (!pcmFile.exists() || pcmFile.length() == 0) return;
 
@@ -953,18 +949,20 @@ public class MainActivity extends AppCompatActivity {
       android.media.MediaMuxer muxer = null;
       FileInputStream fis = null;
       try {
-        Log.i(LOG_TAG, "Opus compression started: " + opusPath);
+        Log.i(LOG_TAG, "AAC compression started: " + aacPath);
 
         android.media.MediaFormat fmt = android.media.MediaFormat.createAudioFormat(
-            "audio/opus", SAMPLE_RATE, 1);
-        fmt.setInteger(android.media.MediaFormat.KEY_BIT_RATE, 6000);
+            "audio/mp4a-latm", SAMPLE_RATE, 1);
+        fmt.setInteger(android.media.MediaFormat.KEY_BIT_RATE, 16000);
+        fmt.setInteger(android.media.MediaFormat.KEY_AAC_PROFILE,
+            android.media.MediaCodecInfo.CodecProfileLevel.AACObjectLC);
 
-        encoder = android.media.MediaCodec.createEncoderByType("audio/opus");
+        encoder = android.media.MediaCodec.createEncoderByType("audio/mp4a-latm");
         encoder.configure(fmt, null, null, android.media.MediaCodec.CONFIGURE_FLAG_ENCODE);
         encoder.start();
 
         muxer = new android.media.MediaMuxer(
-            opusPath, android.media.MediaMuxer.OutputFormat.MUXER_OUTPUT_OGG);
+            aacPath, android.media.MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4);
 
         fis = new FileInputStream(pcmFile);
 
@@ -1030,16 +1028,16 @@ public class MainActivity extends AppCompatActivity {
             encoder.releaseOutputBuffer(outIdx, false);
           }
         }
-        long opusSize = new File(opusPath).length();
-        Log.i(LOG_TAG, "Opus compression done: " + opusSize / 1024 + " KB");
+        long aacSize = new File(aacPath).length();
+        Log.i(LOG_TAG, "AAC compression done: " + aacSize / 1024 + " KB");
         // Delete original PCM after successful compression
-        if (opusSize > 0) {
+        if (aacSize > 0) {
           new File(pcmPath).delete();
           Log.i(LOG_TAG, "Deleted original PCM: " + pcmPath);
         }
       } catch (Exception e) {
-        Log.e(LOG_TAG, "Opus compression failed: " + e.getMessage());
-        new File(opusPath).delete();
+        Log.e(LOG_TAG, "AAC compression failed: " + e.getMessage());
+        new File(aacPath).delete();
       } finally {
         try { if (fis != null) fis.close(); } catch (Exception ignored) {}
         try { if (encoder != null) { encoder.stop(); encoder.release(); } } catch (Exception ignored) {}
@@ -1390,7 +1388,7 @@ public class MainActivity extends AppCompatActivity {
     currentPlaybackRecording = recordingName;
     if (getSupportActionBar() != null) getSupportActionBar().setTitle(recordingName);
 
-    String opusPath = RecordingManager.getOpusPath(this, recordingName);
+    String opusPath = RecordingManager.getAacPath(this, recordingName);
     if (!new File(opusPath).exists()) {
       Toast.makeText(this, "Audio file not found", Toast.LENGTH_SHORT).show();
       return;

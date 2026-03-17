@@ -59,8 +59,8 @@ public class RecordingManager {
     return new File(new File(getRecordingsRoot(context), name), "result.json").getAbsolutePath();
   }
 
-  public static String getOpusPath(Context context, String name) {
-    return new File(new File(getRecordingsRoot(context), name), "audio.ogg").getAbsolutePath();
+  public static String getAacPath(Context context, String name) {
+    return new File(new File(getRecordingsRoot(context), name), "audio.m4a").getAbsolutePath();
   }
 
   /** Load recognition text from result.json (words joined). */
@@ -138,11 +138,11 @@ public class RecordingManager {
       // 8000 Hz mono 16-bit = 16000 bytes/sec
       return pcm.length() * 1000L / 16000L;
     }
-    File ogg = new File(getOpusPath(context, name));
-    if (ogg.exists()) {
+    File aac = new File(getAacPath(context, name));
+    if (aac.exists()) {
       try {
         android.media.MediaMetadataRetriever mmr = new android.media.MediaMetadataRetriever();
-        mmr.setDataSource(ogg.getAbsolutePath());
+        mmr.setDataSource(aac.getAbsolutePath());
         String durStr = mmr.extractMetadata(android.media.MediaMetadataRetriever.METADATA_KEY_DURATION);
         mmr.release();
         if (durStr != null) return Long.parseLong(durStr);

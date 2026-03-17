@@ -957,7 +957,12 @@ public class MainActivity extends AppCompatActivity {
         fmt.setInteger(android.media.MediaFormat.KEY_AAC_PROFILE,
             android.media.MediaCodecInfo.CodecProfileLevel.AACObjectLC);
 
-        encoder = android.media.MediaCodec.createEncoderByType("audio/mp4a-latm");
+        // Force Samsung hardware AAC encoder; fall back to software if unavailable
+        try {
+          encoder = android.media.MediaCodec.createByCodecName("c2.sec.aac.encoder");
+        } catch (Exception e) {
+          encoder = android.media.MediaCodec.createEncoderByType("audio/mp4a-latm");
+        }
         encoder.configure(fmt, null, null, android.media.MediaCodec.CONFIGURE_FLAG_ENCODE);
         encoder.start();
 
@@ -2033,30 +2038,53 @@ public class MainActivity extends AppCompatActivity {
 
     listView.setOnItemLongClickListener((parent, view, pos, id) -> {
       RecordingManager.SearchResult sr = displayList.get(pos);
-      EditText input = new EditText(this);
-      input.setText(sr.name);
-      input.selectAll();
       new AlertDialog.Builder(this)
-          .setTitle("이름 변경")
-          .setView(input)
-          .setPositiveButton("확인", (d, which) -> {
-            String newName = input.getText().toString().trim();
-            if (newName.isEmpty() || newName.equals(sr.name)) return;
-            String result = RecordingManager.renameRecording(this, sr.name, newName);
-            if (result != null) {
-              RecordingManager.SearchResult updated = detailCache.get(sr.name);
-              String preview = updated != null ? updated.preview : sr.preview;
-              long durMs = updated != null ? updated.durationMs : sr.durationMs;
-              displayList.set(pos, new RecordingManager.SearchResult(newName, preview, durMs));
-              detailCache.remove(sr.name);
-              adapter.notifyDataSetChanged();
-              if (sr.name.equals(currentPlaybackRecording)) currentPlaybackRecording = newName;
-              Toast.makeText(this, "이름 변경 완료", Toast.LENGTH_SHORT).show();
+          .setTitle(sr.name)
+          .setItems(new String[]{"이름 변경", "삭제"}, (d, which) -> {
+            if (which == 0) {
+              // 이름 변경
+              EditText input = new EditText(this);
+              input.setText(sr.name);
+              input.selectAll();
+              new AlertDialog.Builder(this)
+                  .setTitle("이름 변경")
+                  .setView(input)
+                  .setPositiveButton("확인", (d2, w2) -> {
+                    String newName = input.getText().toString().trim();
+                    if (newName.isEmpty() || newName.equals(sr.name)) return;
+                    String result = RecordingManager.renameRecording(this, sr.name, newName);
+                    if (result != null) {
+                      RecordingManager.SearchResult updated = detailCache.get(sr.name);
+                      String preview = updated != null ? updated.preview : sr.preview;
+                      long durMs = updated != null ? updated.durationMs : sr.durationMs;
+                      displayList.set(pos, new RecordingManager.SearchResult(newName, preview, durMs));
+                      detailCache.remove(sr.name);
+                      adapter.notifyDataSetChanged();
+                      if (sr.name.equals(currentPlaybackRecording)) currentPlaybackRecording = newName;
+                      Toast.makeText(this, "이름 변경 완료", Toast.LENGTH_SHORT).show();
+                    } else {
+                      Toast.makeText(this, "이름 변경 실패", Toast.LENGTH_SHORT).show();
+                    }
+                  })
+                  .setNegativeButton("취소", null)
+                  .show();
             } else {
-              Toast.makeText(this, "이름 변경 실패", Toast.LENGTH_SHORT).show();
+              // 삭제 확인
+              new AlertDialog.Builder(this)
+                  .setTitle("삭제")
+                  .setMessage("\"" + sr.name + "\" 을 삭제하시겠습니까?")
+                  .setPositiveButton("삭제", (d2, w2) -> {
+                    RecordingManager.deleteRecording(this, sr.name);
+                    displayList.remove(pos);
+                    detailCache.remove(sr.name);
+                    adapter.notifyDataSetChanged();
+                    if (sr.name.equals(currentPlaybackRecording)) currentPlaybackRecording = null;
+                    Toast.makeText(this, "삭제 완료", Toast.LENGTH_SHORT).show();
+                  })
+                  .setNegativeButton("취소", null)
+                  .show();
             }
           })
-          .setNegativeButton("취소", null)
           .show();
       return true;
     });

@@ -5,8 +5,8 @@ import android.content.SharedPreferences;
 import android.os.Bundle;
 import android.widget.Button;
 import android.widget.CheckBox;
-import android.widget.EditText;
 import android.widget.RadioGroup;
+import android.widget.EditText;
 import android.widget.SeekBar;
 import android.widget.TextView;
 import android.widget.Toast;
@@ -26,6 +26,7 @@ public class SettingsActivity extends AppCompatActivity {
     private static final String KEY_VAD_PREBUFFER = "vad_prebuffer";
     private static final String KEY_VAD_TRAILING = "vad_trailing";
     private static final String KEY_RESULT_FONT_SIZE = "result_font_size";
+    private static final String KEY_CODEC = "codec_type";
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -54,6 +55,26 @@ public class SettingsActivity extends AppCompatActivity {
             vizGroup.check(R.id.radioSpectrogram);
         } else {
             vizGroup.check(R.id.radioWaveform);
+        }
+
+        // Codec selection (2x2 grid — mutual exclusion handled manually)
+        android.widget.RadioButton radioOpus = findViewById(R.id.radioOpus);
+        android.widget.RadioButton radioAac = findViewById(R.id.radioAac);
+        android.widget.RadioButton radioAmrNb = findViewById(R.id.radioAmrNb);
+        android.widget.RadioButton radioAacHw = findViewById(R.id.radioAacHw);
+        android.widget.RadioButton[] codecButtons = {radioOpus, radioAac, radioAmrNb, radioAacHw};
+
+        String currentCodec = prefs.getString(KEY_CODEC, "opus");
+        if ("aac".equals(currentCodec)) radioAac.setChecked(true);
+        else if ("amrnb".equals(currentCodec)) radioAmrNb.setChecked(true);
+        else if ("aac_hw".equals(currentCodec)) radioAacHw.setChecked(true);
+        else radioOpus.setChecked(true);
+
+        for (android.widget.RadioButton rb : codecButtons) {
+            rb.setOnCheckedChangeListener((btn, isChecked) -> {
+                if (isChecked) for (android.widget.RadioButton other : codecButtons)
+                    if (other != btn) other.setChecked(false);
+            });
         }
 
         // Audio processing checkboxes
@@ -149,6 +170,12 @@ public class SettingsActivity extends AppCompatActivity {
             String newViz = vizGroup.getCheckedRadioButtonId() == R.id.radioSpectrogram
                 ? "spectrogram" : "waveform";
             prefs.edit().putString(KEY_VIZ_TYPE, newViz).apply();
+
+            // Save codec type
+            String newCodec = radioAac.isChecked() ? "aac"
+                : radioAmrNb.isChecked() ? "amrnb"
+                : radioAacHw.isChecked() ? "aac_hw" : "opus";
+            prefs.edit().putString(KEY_CODEC, newCodec).apply();
 
             // Save audio processing settings
             prefs.edit().putBoolean(KEY_AEC, checkAec.isChecked()).apply();

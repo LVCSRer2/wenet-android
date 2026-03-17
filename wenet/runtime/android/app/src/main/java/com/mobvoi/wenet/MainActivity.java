@@ -157,7 +157,16 @@ public class MainActivity extends AppCompatActivity {
   private String lastDisplayedText = "";
   private int lastAppendedConfirmedLength = 0; // chars from cachedConfirmedText already in TextView
   private String currentRecordingName = null;
-  private FileOutputStream pcmOutputStream = null;
+
+  // Realtime Opus encoder
+  private android.media.MediaCodec realtimeEncoder = null;
+  private android.media.MediaMuxer realtimeMuxer = null;
+  private int realtimeMuxerTrack = -1;
+  private boolean realtimeMuxerStarted = false;
+  private long realtimePresentationUs = 0;
+  private short[] encoderAccumBuf = null;
+  private int encoderAccumFilled = 0;
+  private static final int OPUS_FRAME_SAMPLES = 160; // 20ms at 8kHz
 
   // Playback (OGG streaming)
   private OggStreamPlayer oggPlayer = null;
@@ -360,13 +369,13 @@ public class MainActivity extends AppCompatActivity {
         startRecord = true;
         currentRecordingName = RecordingManager.createRecordingDir(this);
         if (getSupportActionBar() != null) getSupportActionBar().setTitle(currentRecordingName);
-        try {
-          pcmOutputStream = new FileOutputStream(
-              RecordingManager.getPcmAudioPath(this, currentRecordingName));
-        } catch (IOException e) {
-          Log.e(LOG_TAG, "Failed to open PCM output: " + e.getMessage());
-          pcmOutputStream = null;
-        }
+        String codec = getSharedPreferences("wenet_settings", MODE_PRIVATE).getString("codec_type", "opus");
+        String audioOutPath;
+        if ("aac".equals(codec)) audioOutPath = RecordingManager.getAacPath(this, currentRecordingName);
+        else if ("amrnb".equals(codec)) audioOutPath = RecordingManager.getAmrPath(this, currentRecordingName);
+        else if ("aac_hw".equals(codec)) audioOutPath = RecordingManager.getAacPath(this, currentRecordingName);
+        else audioOutPath = RecordingManager.getOpusPath(this, currentRecordingName);
+        startRealtimeEncoder(audioOutPath, codec);
         Recognize.reset();
         cachedConfirmedText = new StringBuilder();
         cachedInProgressSentence = new StringBuilder();
@@ -712,15 +721,7 @@ public class MainActivity extends AppCompatActivity {
           }
         }
         if (AudioRecord.ERROR_INVALID_OPERATION != read && read > 0) {
-          // Save PCM to file
-          if (pcmOutputStream != null) {
-            try {
-              ByteBuffer.wrap(pcmBytes).order(ByteOrder.LITTLE_ENDIAN).asShortBuffer().put(buffer, 0, read);
-              pcmOutputStream.write(pcmBytes, 0, read * 2);
-            } catch (IOException e) {
-              Log.e(LOG_TAG, "Error writing PCM: " + e.getMessage());
-            }
-          }
+          feedToRealtimeEncoder(buffer, read);
           try {
             short[] copy = new short[read];
             System.arraycopy(buffer, 0, copy, 0, read);
@@ -754,16 +755,7 @@ public class MainActivity extends AppCompatActivity {
         ((VoiceRectView) findViewById(R.id.voiceRectView)).zero();
       }
       ((VadProbView) findViewById(R.id.vadProbView)).zero();
-      // Close PCM file
-      if (pcmOutputStream != null) {
-        try {
-          pcmOutputStream.flush();
-          pcmOutputStream.close();
-        } catch (IOException e) {
-          Log.e(LOG_TAG, "Error closing PCM: " + e.getMessage());
-        }
-        pcmOutputStream = null;
-      }
+      finalizeRealtimeEncoder();
     }).start();
   }
 
@@ -906,8 +898,6 @@ public class MainActivity extends AppCompatActivity {
         } else {
           // Save result.json with timed result
           saveTimedResult();
-          // Compress PCM to Opus 6kbps (synchronous, runs in this background thread)
-          compressToAac(currentRecordingName);
           // Build timestamped text for copy & Slack
           try {
             timestampedResult = buildTimestampedText(Recognize.getTimedResult());
@@ -938,16 +928,150 @@ public class MainActivity extends AppCompatActivity {
     }).start();
   }
 
+  private void startRealtimeEncoder(String outputPath, String codec) {
+    try {
+      String mime;
+      int bitrate;
+      int muxerFormat;
+      if ("aac".equals(codec) || "aac_hw".equals(codec)) {
+        mime = "audio/mp4a-latm"; bitrate = 16000;
+        muxerFormat = android.media.MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4;
+      } else if ("amrnb".equals(codec)) {
+        mime = "audio/3gpp"; bitrate = 12200;
+        muxerFormat = android.media.MediaMuxer.OutputFormat.MUXER_OUTPUT_3GPP;
+      } else {
+        mime = "audio/opus"; bitrate = 6000;
+        muxerFormat = android.media.MediaMuxer.OutputFormat.MUXER_OUTPUT_OGG;
+      }
+      android.media.MediaFormat fmt = android.media.MediaFormat.createAudioFormat(mime, SAMPLE_RATE, 1);
+      fmt.setInteger(android.media.MediaFormat.KEY_BIT_RATE, bitrate);
+      if ("aac".equals(codec) || "aac_hw".equals(codec)) {
+        fmt.setInteger(android.media.MediaFormat.KEY_AAC_PROFILE,
+            android.media.MediaCodecInfo.CodecProfileLevel.AACObjectLC);
+      }
+      if ("aac_hw".equals(codec)) {
+        try {
+          realtimeEncoder = android.media.MediaCodec.createByCodecName("c2.sec.aac.encoder");
+        } catch (Exception e) {
+          Log.w(LOG_TAG, "HW AAC encoder not found, falling back to SW");
+          realtimeEncoder = android.media.MediaCodec.createEncoderByType(mime);
+        }
+      } else {
+        realtimeEncoder = android.media.MediaCodec.createEncoderByType(mime);
+      }
+      realtimeEncoder.configure(fmt, null, null, android.media.MediaCodec.CONFIGURE_FLAG_ENCODE);
+      realtimeEncoder.start();
+      realtimeMuxer = new android.media.MediaMuxer(outputPath, muxerFormat);
+      realtimeMuxerTrack = -1;
+      realtimeMuxerStarted = false;
+      realtimePresentationUs = 0;
+      encoderAccumBuf = new short[OPUS_FRAME_SAMPLES];
+      encoderAccumFilled = 0;
+      Log.i(LOG_TAG, "Realtime Opus encoder started: " + outputPath);
+    } catch (Exception e) {
+      Log.e(LOG_TAG, "Failed to start realtime encoder: " + e.getMessage());
+      realtimeEncoder = null;
+      realtimeMuxer = null;
+    }
+  }
+
+  private void feedToRealtimeEncoder(short[] samples, int count) {
+    if (realtimeEncoder == null) return;
+    int srcPos = 0;
+    while (srcPos < count) {
+      int toCopy = Math.min(count - srcPos, OPUS_FRAME_SAMPLES - encoderAccumFilled);
+      System.arraycopy(samples, srcPos, encoderAccumBuf, encoderAccumFilled, toCopy);
+      srcPos += toCopy;
+      encoderAccumFilled += toCopy;
+      if (encoderAccumFilled == OPUS_FRAME_SAMPLES) {
+        submitFrame(encoderAccumBuf, OPUS_FRAME_SAMPLES, false);
+        encoderAccumFilled = 0;
+      }
+    }
+    drainEncoder(0); // non-blocking drain
+  }
+
+  private void submitFrame(short[] samples, int count, boolean eos) {
+    try {
+      int inIdx = realtimeEncoder.dequeueInputBuffer(5000);
+      if (inIdx >= 0) {
+        java.nio.ByteBuffer inBuf = realtimeEncoder.getInputBuffer(inIdx);
+        inBuf.clear();
+        byte[] bytes = new byte[count * 2];
+        java.nio.ByteBuffer.wrap(bytes).order(java.nio.ByteOrder.LITTLE_ENDIAN).asShortBuffer().put(samples, 0, count);
+        inBuf.put(bytes, 0, count * 2);
+        int flags = eos ? android.media.MediaCodec.BUFFER_FLAG_END_OF_STREAM : 0;
+        realtimeEncoder.queueInputBuffer(inIdx, 0, count * 2, realtimePresentationUs, flags);
+        realtimePresentationUs += count * 1_000_000L / SAMPLE_RATE;
+      }
+    } catch (Exception e) {
+      Log.e(LOG_TAG, "Encoder input error: " + e.getMessage());
+    }
+  }
+
+  private void drainEncoder(long timeoutUs) {
+    if (realtimeEncoder == null || realtimeMuxer == null) return;
+    android.media.MediaCodec.BufferInfo info = new android.media.MediaCodec.BufferInfo();
+    while (true) {
+      int outIdx = realtimeEncoder.dequeueOutputBuffer(info, timeoutUs);
+      if (outIdx == android.media.MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
+        realtimeMuxerTrack = realtimeMuxer.addTrack(realtimeEncoder.getOutputFormat());
+        realtimeMuxer.start();
+        realtimeMuxerStarted = true;
+      } else if (outIdx >= 0) {
+        if (realtimeMuxerStarted && info.size > 0) {
+          java.nio.ByteBuffer outBuf = realtimeEncoder.getOutputBuffer(outIdx);
+          outBuf.position(info.offset);
+          outBuf.limit(info.offset + info.size);
+          realtimeMuxer.writeSampleData(realtimeMuxerTrack, outBuf, info);
+        }
+        realtimeEncoder.releaseOutputBuffer(outIdx, false);
+        if ((info.flags & android.media.MediaCodec.BUFFER_FLAG_END_OF_STREAM) != 0) break;
+      } else {
+        break;
+      }
+    }
+  }
+
+  private void finalizeRealtimeEncoder() {
+    if (realtimeEncoder == null) return;
+    try {
+      // Submit remaining samples + EOS
+      if (encoderAccumFilled > 0) {
+        java.util.Arrays.fill(encoderAccumBuf, encoderAccumFilled, OPUS_FRAME_SAMPLES, (short) 0);
+        submitFrame(encoderAccumBuf, OPUS_FRAME_SAMPLES, true);
+      } else {
+        int inIdx = realtimeEncoder.dequeueInputBuffer(5000);
+        if (inIdx >= 0) {
+          realtimeEncoder.queueInputBuffer(inIdx, 0, 0, realtimePresentationUs,
+              android.media.MediaCodec.BUFFER_FLAG_END_OF_STREAM);
+        }
+      }
+      drainEncoder(5000); // blocking drain until EOS
+      Log.i(LOG_TAG, "Realtime Opus encoder finalized");
+    } catch (Exception e) {
+      Log.e(LOG_TAG, "Error finalizing encoder: " + e.getMessage());
+    } finally {
+      try { realtimeEncoder.stop(); realtimeEncoder.release(); } catch (Exception ignored) {}
+      try { realtimeMuxer.stop(); realtimeMuxer.release(); } catch (Exception ignored) {}
+      realtimeEncoder = null;
+      realtimeMuxer = null;
+    }
+  }
+
   private void compressToAac(String recordingName) {
     {
       String pcmPath = RecordingManager.getPcmAudioPath(this, recordingName);
-      String aacPath = RecordingManager.getAacPath(this, recordingName);
+      String aacPath = RecordingManager.getOpusPath(this, recordingName);
       File pcmFile = new File(pcmPath);
       if (!pcmFile.exists() || pcmFile.length() == 0) return;
 
       android.media.MediaCodec encoder = null;
       android.media.MediaMuxer muxer = null;
       FileInputStream fis = null;
+      final int ENCODE_NOTIF_ID = 2;
+      final android.app.NotificationManager nm =
+          (android.app.NotificationManager) getSystemService(NOTIFICATION_SERVICE);
       try {
         Log.i(LOG_TAG, "AAC compression started: " + aacPath);
 
@@ -957,12 +1081,7 @@ public class MainActivity extends AppCompatActivity {
         fmt.setInteger(android.media.MediaFormat.KEY_AAC_PROFILE,
             android.media.MediaCodecInfo.CodecProfileLevel.AACObjectLC);
 
-        // Force Samsung hardware AAC encoder; fall back to software if unavailable
-        try {
-          encoder = android.media.MediaCodec.createByCodecName("c2.sec.aac.encoder");
-        } catch (Exception e) {
-          encoder = android.media.MediaCodec.createEncoderByType("audio/mp4a-latm");
-        }
+        encoder = android.media.MediaCodec.createEncoderByType("audio/mp4a-latm");
         encoder.configure(fmt, null, null, android.media.MediaCodec.CONFIGURE_FLAG_ENCODE);
         encoder.start();
 
@@ -981,8 +1100,16 @@ public class MainActivity extends AppCompatActivity {
         boolean outputDone = false;
         long presentationUs = 0;
         final long totalDurationUs = pcmFile.length() * 1_000_000L / (SAMPLE_RATE * 2);
-        final android.widget.Toast[] progressToast = {null};
-        int lastToastPct = -1;
+        final String CHANNEL_ID = "wenet_recording_channel";
+        final androidx.core.app.NotificationCompat.Builder notifBuilder =
+            new androidx.core.app.NotificationCompat.Builder(this, CHANNEL_ID)
+                .setContentTitle("인코딩 중...")
+                .setSmallIcon(R.mipmap.ic_launcher)
+                .setOngoing(true)
+                .setOnlyAlertOnce(true)
+                .setProgress(100, 0, false);
+        nm.notify(ENCODE_NOTIF_ID, notifBuilder.build());
+        int lastNotifPct = -1;
 
         while (!outputDone) {
           if (!inputDone) {
@@ -1001,16 +1128,11 @@ public class MainActivity extends AppCompatActivity {
                 presentationUs += (long) bytesRead * 1000000 / (SAMPLE_RATE * 2);
                 if (totalDurationUs > 0) {
                   int pct = (int) (presentationUs * 100 / totalDurationUs);
-                  int step = (pct / 10) * 10;
-                  if (step != lastToastPct) {
-                    lastToastPct = step;
-                    final int showPct = step;
-                    runOnUiThread(() -> {
-                      if (progressToast[0] != null) progressToast[0].cancel();
-                      progressToast[0] = android.widget.Toast.makeText(
-                          MainActivity.this, "인코딩 중... " + showPct + "%", android.widget.Toast.LENGTH_SHORT);
-                      progressToast[0].show();
-                    });
+                  if (pct != lastNotifPct) {
+                    lastNotifPct = pct;
+                    notifBuilder.setContentTitle("인코딩 중... " + pct + "%")
+                        .setProgress(100, pct, false);
+                    nm.notify(ENCODE_NOTIF_ID, notifBuilder.build());
                   }
                 }
               }
@@ -1035,6 +1157,7 @@ public class MainActivity extends AppCompatActivity {
         }
         long aacSize = new File(aacPath).length();
         Log.i(LOG_TAG, "AAC compression done: " + aacSize / 1024 + " KB");
+        nm.cancel(ENCODE_NOTIF_ID);
         // Delete original PCM after successful compression
         if (aacSize > 0) {
           new File(pcmPath).delete();
@@ -1042,6 +1165,7 @@ public class MainActivity extends AppCompatActivity {
         }
       } catch (Exception e) {
         Log.e(LOG_TAG, "AAC compression failed: " + e.getMessage());
+        nm.cancel(ENCODE_NOTIF_ID);
         new File(aacPath).delete();
       } finally {
         try { if (fis != null) fis.close(); } catch (Exception ignored) {}
@@ -1393,8 +1517,8 @@ public class MainActivity extends AppCompatActivity {
     currentPlaybackRecording = recordingName;
     if (getSupportActionBar() != null) getSupportActionBar().setTitle(recordingName);
 
-    String opusPath = RecordingManager.getAacPath(this, recordingName);
-    if (!new File(opusPath).exists()) {
+    String opusPath = RecordingManager.findAudioPath(this, recordingName);
+    if (opusPath == null) {
       Toast.makeText(this, "Audio file not found", Toast.LENGTH_SHORT).show();
       return;
     }

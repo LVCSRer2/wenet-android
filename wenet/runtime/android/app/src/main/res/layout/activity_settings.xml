@@ -70,6 +70,64 @@
     <TextView
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
+        android:text="Audio Codec"
+        android:textSize="16sp"
+        android:layout_marginBottom="8dp" />
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:layout_marginBottom="24dp">
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal">
+
+            <RadioButton
+                android:id="@+id/radioOpus"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:text="Opus" />
+
+            <RadioButton
+                android:id="@+id/radioAac"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:text="AAC" />
+
+        </LinearLayout>
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:layout_marginTop="4dp">
+
+            <RadioButton
+                android:id="@+id/radioAmrNb"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:text="AMR-NB" />
+
+            <RadioButton
+                android:id="@+id/radioAacHw"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:text="AAC (HW)" />
+
+        </LinearLayout>
+
+    </LinearLayout>
+
+    <TextView
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
         android:text="Audio Processing"
         android:textSize="16sp"
         android:layout_marginBottom="8dp" />

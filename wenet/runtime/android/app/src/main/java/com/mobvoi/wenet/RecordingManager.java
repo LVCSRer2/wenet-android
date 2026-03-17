@@ -59,8 +59,27 @@ public class RecordingManager {
     return new File(new File(getRecordingsRoot(context), name), "result.json").getAbsolutePath();
   }
 
+  public static String getOpusPath(Context context, String name) {
+    return new File(new File(getRecordingsRoot(context), name), "audio.ogg").getAbsolutePath();
+  }
+
   public static String getAacPath(Context context, String name) {
     return new File(new File(getRecordingsRoot(context), name), "audio.m4a").getAbsolutePath();
+  }
+
+  public static String getAmrPath(Context context, String name) {
+    return new File(new File(getRecordingsRoot(context), name), "audio.3gp").getAbsolutePath();
+  }
+
+  /** Returns the first encoded audio file that exists (.ogg / .m4a / .3gp), or null. */
+  public static String findAudioPath(Context context, String name) {
+    String[] candidates = {
+        getOpusPath(context, name),
+        getAacPath(context, name),
+        getAmrPath(context, name)
+    };
+    for (String p : candidates) if (new File(p).exists()) return p;
+    return null;
   }
 
   /** Load recognition text from result.json (words joined). */
@@ -138,11 +157,11 @@ public class RecordingManager {
       // 8000 Hz mono 16-bit = 16000 bytes/sec
       return pcm.length() * 1000L / 16000L;
     }
-    File aac = new File(getAacPath(context, name));
-    if (aac.exists()) {
+    String audioPath = findAudioPath(context, name);
+    if (audioPath != null) {
       try {
         android.media.MediaMetadataRetriever mmr = new android.media.MediaMetadataRetriever();
-        mmr.setDataSource(aac.getAbsolutePath());
+        mmr.setDataSource(audioPath);
         String durStr = mmr.extractMetadata(android.media.MediaMetadataRetriever.METADATA_KEY_DURATION);
         mmr.release();
         if (durStr != null) return Long.parseLong(durStr);

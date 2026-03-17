@@ -91,31 +91,64 @@ public class RecordingManager {
   public static class SearchResult {
     public final String name;
     public final String preview;
-    public SearchResult(String name, String preview) {
+    public final long durationMs; // 0 if unknown
+    public SearchResult(String name, String preview, long durationMs) {
       this.name = name;
       this.preview = preview;
+      this.durationMs = durationMs;
+    }
+    /** Legacy compat */
+    public SearchResult(String name, String preview) {
+      this(name, preview, 0);
     }
   }
 
-  /** Search recordings by keyword. Returns all if keyword is empty. */
+  /** Search recordings by keyword. Returns all if keyword is empty.
+   *  Also loads duration from PCM file size or OGG metadata. Safe to call on a background thread. */
   public static List<SearchResult> searchRecordings(Context context, String keyword) {
     List<String> all = listRecordings(context);
     List<SearchResult> results = new ArrayList<>();
     String kw = (keyword != null) ? keyword.trim().toLowerCase(Locale.ROOT) : "";
     for (String name : all) {
       String text = loadResultText(context, name);
+      boolean matches = kw.isEmpty() || text.toLowerCase(Locale.ROOT).contains(kw);
+      if (!matches) continue;
+
+      String preview;
       if (kw.isEmpty()) {
-        String preview = text.length() > 60 ? text.substring(0, 60) + "..." : text;
-        results.add(new SearchResult(name, preview.isEmpty() ? "(no text)" : preview));
-      } else if (text.toLowerCase(Locale.ROOT).contains(kw)) {
+        preview = text.length() > 60 ? text.substring(0, 60) + "..." : text;
+        if (preview.isEmpty()) preview = "(no text)";
+      } else {
         int idx = text.toLowerCase(Locale.ROOT).indexOf(kw);
         int start = Math.max(0, idx - 20);
         int end = Math.min(text.length(), idx + kw.length() + 40);
-        String preview = (start > 0 ? "..." : "") + text.substring(start, end) + (end < text.length() ? "..." : "");
-        results.add(new SearchResult(name, preview));
+        preview = (start > 0 ? "..." : "") + text.substring(start, end) + (end < text.length() ? "..." : "");
       }
+
+      long durationMs = loadDurationMs(context, name);
+      results.add(new SearchResult(name, preview, durationMs));
     }
     return results;
+  }
+
+  /** Returns duration in ms. Tries PCM file size first, then OGG metadata. */
+  public static long loadDurationMs(Context context, String name) {
+    File pcm = new File(getAudioPath(context, name));
+    if (pcm.exists() && pcm.length() > 0) {
+      // 8000 Hz mono 16-bit = 16000 bytes/sec
+      return pcm.length() * 1000L / 16000L;
+    }
+    File ogg = new File(getOpusPath(context, name));
+    if (ogg.exists()) {
+      try {
+        android.media.MediaMetadataRetriever mmr = new android.media.MediaMetadataRetriever();
+        mmr.setDataSource(ogg.getAbsolutePath());
+        String durStr = mmr.extractMetadata(android.media.MediaMetadataRetriever.METADATA_KEY_DURATION);
+        mmr.release();
+        if (durStr != null) return Long.parseLong(durStr);
+      } catch (Exception ignored) {}
+    }
+    return 0;
   }
 
   /** Rename a recording directory. Returns new name on success, null on failure. */

@@ -1840,9 +1840,9 @@ public class MainActivity extends AppCompatActivity {
   // --- Recordings Dialog ---
 
   private void showRecordingsDialog() {
-    List<RecordingManager.SearchResult> allResults =
-        RecordingManager.searchRecordings(this, "");
-    if (allResults.isEmpty()) {
+    // Step 1: Directory listing only — instant, no I/O
+    List<String> allNames = RecordingManager.listRecordings(this);
+    if (allNames.isEmpty()) {
       Toast.makeText(this, "No recordings found", Toast.LENGTH_SHORT).show();
       return;
     }
@@ -1850,10 +1850,27 @@ public class MainActivity extends AppCompatActivity {
     View dialogView = getLayoutInflater().inflate(R.layout.dialog_recordings, null);
     EditText searchEdit = dialogView.findViewById(R.id.searchEditText);
     ListView listView = dialogView.findViewById(R.id.recordingsListView);
+    TextView loadingText = dialogView.findViewById(R.id.loadingText);
+    loadingText.setVisibility(View.GONE);
+    listView.setVisibility(View.VISIBLE);
 
-    List<RecordingManager.SearchResult> displayList = new ArrayList<>(allResults);
+    // Detail cache: name → loaded SearchResult (preview + duration)
+    java.util.concurrent.ConcurrentHashMap<String, RecordingManager.SearchResult> detailCache =
+        new java.util.concurrent.ConcurrentHashMap<>();
+    java.util.Set<String> loadingSet =
+        java.util.Collections.newSetFromMap(new java.util.concurrent.ConcurrentHashMap<>());
+    java.util.concurrent.ExecutorService executor =
+        java.util.concurrent.Executors.newFixedThreadPool(4);
 
-    BaseAdapter adapter = new BaseAdapter() {
+    // Display list: initially just names with empty placeholders
+    List<RecordingManager.SearchResult> displayList = new ArrayList<>();
+    for (String name : allNames) {
+      displayList.add(new RecordingManager.SearchResult(name, "", 0));
+    }
+
+    // Adapter reference needed inside itself for notifyDataSetChanged callback
+    final BaseAdapter[] adapterRef = new BaseAdapter[1];
+    adapterRef[0] = new BaseAdapter() {
       @Override public int getCount() { return displayList.size(); }
       @Override public Object getItem(int pos) { return displayList.get(pos); }
       @Override public long getItemId(int pos) { return pos; }
@@ -1863,59 +1880,55 @@ public class MainActivity extends AppCompatActivity {
           convertView = getLayoutInflater().inflate(R.layout.item_recording, parent, false);
         }
         RecordingManager.SearchResult sr = displayList.get(pos);
-        ((TextView) convertView.findViewById(R.id.recordingName)).setText(sr.name);
-        ((TextView) convertView.findViewById(R.id.recordingPreview)).setText(sr.preview);
-        // Show audio duration
+        String name = sr.name;
+        ((TextView) convertView.findViewById(R.id.recordingName)).setText(name);
+        TextView previewView = convertView.findViewById(R.id.recordingPreview);
         TextView durationView = convertView.findViewById(R.id.recordingDuration);
-        File audioFile = new File(RecordingManager.getAudioPath(MainActivity.this, sr.name));
-        if (audioFile.exists() && audioFile.length() > 0) {
-          long totalSec = audioFile.length() / (SAMPLE_RATE * 2);
-          int h = (int)(totalSec / 3600);
-          int m = (int)((totalSec % 3600) / 60);
-          int s = (int)(totalSec % 60);
-          durationView.setText(String.format("[%02d:%02d:%02d]", h, m, s));
-        } else {
-          File opusFile = new File(RecordingManager.getOpusPath(MainActivity.this, sr.name));
-          if (opusFile.exists()) {
-            try {
-              android.media.MediaMetadataRetriever mmr = new android.media.MediaMetadataRetriever();
-              mmr.setDataSource(opusFile.getAbsolutePath());
-              String durStr = mmr.extractMetadata(android.media.MediaMetadataRetriever.METADATA_KEY_DURATION);
-              mmr.release();
-              if (durStr != null) {
-                long totalSec = Long.parseLong(durStr) / 1000;
-                int h = (int)(totalSec / 3600);
-                int m = (int)((totalSec % 3600) / 60);
-                int s = (int)(totalSec % 60);
-                durationView.setText(String.format("[%02d:%02d:%02d]", h, m, s));
-              } else {
-                durationView.setText("");
-              }
-            } catch (Exception e) {
-              durationView.setText("");
-            }
+
+        RecordingManager.SearchResult cached = detailCache.get(name);
+        if (cached != null) {
+          // Already loaded — show details
+          previewView.setText(cached.preview);
+          if (cached.durationMs > 0) {
+            long totalSec = cached.durationMs / 1000;
+            int h = (int)(totalSec / 3600), m = (int)((totalSec % 3600) / 60), s = (int)(totalSec % 60);
+            durationView.setText(String.format("[%02d:%02d:%02d]", h, m, s));
           } else {
             durationView.setText("");
           }
-        }
-        // Highlight currently selected recording
-        if (sr.name.equals(currentPlaybackRecording)) {
-          convertView.setBackgroundColor(0x332196F3); // light blue tint
         } else {
-          convertView.setBackgroundColor(Color.TRANSPARENT);
+          // Not yet loaded — show empty and trigger async load
+          previewView.setText("");
+          durationView.setText("");
+          if (loadingSet.add(name)) {
+            executor.submit(() -> {
+              String text = RecordingManager.loadResultText(MainActivity.this, name);
+              String preview = text.length() > 60 ? text.substring(0, 60) + "..." : text;
+              if (preview.isEmpty()) preview = "(no text)";
+              long durationMs = RecordingManager.loadDurationMs(MainActivity.this, name);
+              detailCache.put(name, new RecordingManager.SearchResult(name, preview, durationMs));
+              runOnUiThread(() -> adapterRef[0].notifyDataSetChanged());
+            });
+          }
         }
+
+        convertView.setBackgroundColor(
+            name.equals(currentPlaybackRecording) ? 0x332196F3 : Color.TRANSPARENT);
         return convertView;
       }
     };
+    BaseAdapter adapter = adapterRef[0];
     listView.setAdapter(adapter);
 
     AlertDialog dialog = new AlertDialog.Builder(this)
         .setTitle("Recordings")
         .setView(dialogView)
-        .setNegativeButton("Cancel", null)
+        .setNegativeButton("Cancel", (d, w) -> executor.shutdownNow())
         .create();
+    dialog.setOnCancelListener(d -> executor.shutdownNow());
 
     listView.setOnItemClickListener((parent, view, pos, id) -> {
+      executor.shutdownNow();
       dialog.dismiss();
       stopPlayback();
       enterPlaybackMode(displayList.get(pos).name);
@@ -1934,13 +1947,13 @@ public class MainActivity extends AppCompatActivity {
             if (newName.isEmpty() || newName.equals(sr.name)) return;
             String result = RecordingManager.renameRecording(this, sr.name, newName);
             if (result != null) {
-              // Update display list
-              displayList.set(pos, new RecordingManager.SearchResult(newName, sr.preview));
+              RecordingManager.SearchResult updated = detailCache.get(sr.name);
+              String preview = updated != null ? updated.preview : sr.preview;
+              long durMs = updated != null ? updated.durationMs : sr.durationMs;
+              displayList.set(pos, new RecordingManager.SearchResult(newName, preview, durMs));
+              detailCache.remove(sr.name);
               adapter.notifyDataSetChanged();
-              // Update current playback if renamed
-              if (sr.name.equals(currentPlaybackRecording)) {
-                currentPlaybackRecording = newName;
-              }
+              if (sr.name.equals(currentPlaybackRecording)) currentPlaybackRecording = newName;
               Toast.makeText(this, "이름 변경 완료", Toast.LENGTH_SHORT).show();
             } else {
               Toast.makeText(this, "이름 변경 실패", Toast.LENGTH_SHORT).show();
@@ -1953,10 +1966,42 @@ public class MainActivity extends AppCompatActivity {
 
     searchEdit.setOnEditorActionListener((v, actionId, event) -> {
       String keyword = searchEdit.getText().toString().trim();
-      displayList.clear();
-      displayList.addAll(RecordingManager.searchRecordings(
-          MainActivity.this, keyword));
-      adapter.notifyDataSetChanged();
+      if (keyword.isEmpty()) {
+        // Reset to full name list
+        displayList.clear();
+        for (String name : allNames) {
+          RecordingManager.SearchResult cached = detailCache.get(name);
+          displayList.add(cached != null ? cached : new RecordingManager.SearchResult(name, "", 0));
+        }
+        adapter.notifyDataSetChanged();
+      } else {
+        listView.setVisibility(View.GONE);
+        loadingText.setText("검색 중...");
+        loadingText.setVisibility(View.VISIBLE);
+        new Thread(() -> {
+          // Use cached previews where available, otherwise load text for search
+          List<RecordingManager.SearchResult> results = new ArrayList<>();
+          String kw = keyword.toLowerCase(java.util.Locale.ROOT);
+          for (String name : allNames) {
+            RecordingManager.SearchResult cached = detailCache.get(name);
+            String text = cached != null
+                ? cached.preview
+                : RecordingManager.loadResultText(MainActivity.this, name);
+            if (text.toLowerCase(java.util.Locale.ROOT).contains(kw)) {
+              results.add(cached != null ? cached
+                  : new RecordingManager.SearchResult(name, text.length() > 60
+                      ? text.substring(0, 60) + "..." : text, 0));
+            }
+          }
+          runOnUiThread(() -> {
+            loadingText.setVisibility(View.GONE);
+            displayList.clear();
+            displayList.addAll(results);
+            adapter.notifyDataSetChanged();
+            listView.setVisibility(View.VISIBLE);
+          });
+        }).start();
+      }
       return true;
     });
 

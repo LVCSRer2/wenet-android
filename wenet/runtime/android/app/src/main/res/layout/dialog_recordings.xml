@@ -15,12 +15,22 @@
         android:drawableStart="@android:drawable/ic_menu_search"
         android:drawablePadding="8dp" />
 
+    <TextView
+        android:id="@+id/loadingText"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="16dp"
+        android:gravity="center"
+        android:text="로딩 중..."
+        android:visibility="visible" />
+
     <ListView
         android:id="@+id/recordingsListView"
         android:layout_width="match_parent"
         android:layout_height="300dp"
         android:layout_marginTop="8dp"
         android:divider="@android:color/darker_gray"
-        android:dividerHeight="0.5dp" />
+        android:dividerHeight="0.5dp"
+        android:visibility="gone" />
 
 </LinearLayout>

@@ -1381,46 +1381,49 @@ public class MainActivity extends AppCompatActivity {
       return;
     }
 
-    // Prepare OggStreamPlayer synchronously (lightweight: opens extractor only)
-    OggStreamPlayer player = new OggStreamPlayer(opusPath);
-    if (!player.prepare()) {
-      Toast.makeText(this, "오디오 열기 실패", Toast.LENGTH_SHORT).show();
-      return;
-    }
-
-    playbackAudioPath = opusPath;
-    playbackDurationMs = player.getTotalDurationMs();
-    pcmFileLength = playbackDurationMs * SAMPLE_RATE * 2 / 1000; // virtual, for bytesToMs compat
-
-    if (oggPlayer != null) { oggPlayer.release(); }
-    oggPlayer = player;
-
-    oggPlayer.setListener(new OggStreamPlayer.Listener() {
-      @Override public void onPositionMs(int ms) {
-        if (!userSeekingBar && isPlaying) {
-          playbackPositionMs = ms;
-          updatePlaybackUI(ms);
-          updateKaraokeHighlight(ms);
-          updateVisualizationCursor(ms);
-        }
+    // prepare() initialises MediaExtractor + MediaCodec — must run off main thread
+    new Thread(() -> {
+      OggStreamPlayer player = new OggStreamPlayer(opusPath);
+      if (!player.prepare()) {
+        runOnUiThread(() -> Toast.makeText(this, "오디오 열기 실패", Toast.LENGTH_SHORT).show());
+        return;
       }
-      @Override public void onPlaybackComplete() {
-        isPlaying = false;
-        playbackPositionMs = 0;
-        Button ppBtn = findViewById(R.id.playPauseButton);
-        ppBtn.setText("Play");
-        updatePlaybackUI(0);
-        updateKaraokeHighlight(0);
-        if (useSpectrogram) {
-          ((SpectrogramView) findViewById(R.id.spectrogramView)).setCursorPosition(0f);
-        } else {
-          ((VoiceRectView) findViewById(R.id.voiceRectView)).setCursorPosition(0f);
-        }
-        ((VadProbView) findViewById(R.id.vadProbView)).setCursorPosition(0f);
-      }
-    });
+      long durationMs = player.getTotalDurationMs();
+      runOnUiThread(() -> {
+        if (oggPlayer != null) { oggPlayer.release(); }
+        oggPlayer = player;
+        playbackAudioPath = opusPath;
+        playbackDurationMs = durationMs;
+        pcmFileLength = durationMs * SAMPLE_RATE * 2 / 1000;
 
-    enterPlaybackModeWithOgg(recordingName, opusPath, playbackDurationMs);
+        oggPlayer.setListener(new OggStreamPlayer.Listener() {
+          @Override public void onPositionMs(int ms) {
+            if (!userSeekingBar && isPlaying) {
+              playbackPositionMs = ms;
+              updatePlaybackUI(ms);
+              updateKaraokeHighlight(ms);
+              updateVisualizationCursor(ms);
+            }
+          }
+          @Override public void onPlaybackComplete() {
+            isPlaying = false;
+            playbackPositionMs = 0;
+            Button ppBtn = findViewById(R.id.playPauseButton);
+            ppBtn.setText("Play");
+            updatePlaybackUI(0);
+            updateKaraokeHighlight(0);
+            if (useSpectrogram) {
+              ((SpectrogramView) findViewById(R.id.spectrogramView)).setCursorPosition(0f);
+            } else {
+              ((VoiceRectView) findViewById(R.id.voiceRectView)).setCursorPosition(0f);
+            }
+            ((VadProbView) findViewById(R.id.vadProbView)).setCursorPosition(0f);
+          }
+        });
+
+        enterPlaybackModeWithOgg(recordingName, opusPath, durationMs);
+      });
+    }).start();
   }
 
   private void enterPlaybackModeWithOgg(String recordingName, String opusPath, long durationMs) {
@@ -1457,6 +1460,111 @@ public class MainActivity extends AppCompatActivity {
    * Waveform: decoded progressively via PcmDataSource (on-demand per-bar window).
    * Spectrogram: OggPcmDataSource passed directly (decodes on-demand per-column).
    */
+  /**
+   * Single-pass sequential OGG decode → normalized energy bars [0..1].
+   * Creates ONE MediaExtractor+MediaCodec, reads forward without random seek.
+   */
+  private double[] decodeOggEnergyBars(String opusPath, long totalSamples8kHz) {
+    final int MAX_BARS = 5000;
+    long samplesPerBar = Math.max(512, totalSamples8kHz / MAX_BARS);
+    int barCount = (int) (totalSamples8kHz / samplesPerBar);
+    if (barCount == 0) barCount = 1;
+    double[] rawDb = new double[barCount];
+    double maxDb = -999;
+    int barsFilled = 0;
+
+    android.media.MediaExtractor extractor = null;
+    android.media.MediaCodec decoder = null;
+    try {
+      extractor = new android.media.MediaExtractor();
+      extractor.setDataSource(opusPath);
+      int trackIdx = -1;
+      for (int i = 0; i < extractor.getTrackCount(); i++) {
+        android.media.MediaFormat fmt = extractor.getTrackFormat(i);
+        String mime = fmt.getString(android.media.MediaFormat.KEY_MIME);
+        if (mime != null && mime.startsWith("audio/")) { trackIdx = i; break; }
+      }
+      if (trackIdx < 0) return new double[0];
+      extractor.selectTrack(trackIdx);
+      android.media.MediaFormat fmt = extractor.getTrackFormat(trackIdx);
+      String mime = fmt.getString(android.media.MediaFormat.KEY_MIME);
+      decoder = android.media.MediaCodec.createDecoderByType(mime);
+      decoder.configure(fmt, null, null, 0);
+      decoder.start();
+
+      int decimation = 6; // default 48kHz→8kHz
+      boolean formatKnown = false;
+      boolean inputDone = false;
+      boolean outputDone = false;
+      android.media.MediaCodec.BufferInfo info = new android.media.MediaCodec.BufferInfo();
+
+      // Accumulator for current bar
+      double barSum = 0;
+      long barSampleCount = 0;
+
+      while (!outputDone && barsFilled < barCount) {
+        if (!inputDone) {
+          int inIdx = decoder.dequeueInputBuffer(5000);
+          if (inIdx >= 0) {
+            java.nio.ByteBuffer inBuf = decoder.getInputBuffer(inIdx);
+            int n = extractor.readSampleData(inBuf, 0);
+            if (n < 0) {
+              decoder.queueInputBuffer(inIdx, 0, 0, 0, android.media.MediaCodec.BUFFER_FLAG_END_OF_STREAM);
+              inputDone = true;
+            } else {
+              decoder.queueInputBuffer(inIdx, 0, n, extractor.getSampleTime(), 0);
+              extractor.advance();
+            }
+          }
+        }
+        int outIdx = decoder.dequeueOutputBuffer(info, 5000);
+        if (outIdx == android.media.MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
+          android.media.MediaFormat nf = decoder.getOutputFormat();
+          int outRate = nf.containsKey(android.media.MediaFormat.KEY_SAMPLE_RATE)
+              ? nf.getInteger(android.media.MediaFormat.KEY_SAMPLE_RATE) : 48000;
+          decimation = Math.max(1, outRate / SAMPLE_RATE);
+          formatKnown = true;
+        } else if (outIdx >= 0) {
+          java.nio.ByteBuffer outBuf = decoder.getOutputBuffer(outIdx);
+          if (outBuf != null && info.size > 0 && formatKnown) {
+            byte[] raw = new byte[info.size];
+            outBuf.position(info.offset);
+            outBuf.get(raw, 0, info.size);
+            int frameBytes = 2; // 16-bit mono out
+            for (int i = 0; i + 1 < raw.length && barsFilled < barCount; i += decimation * frameBytes) {
+              short s = (short) ((raw[i] & 0xFF) | (raw[i + 1] << 8));
+              barSum += (double) s * s;
+              barSampleCount++;
+              if (barSampleCount >= samplesPerBar) {
+                double rms = Math.sqrt(barSum / barSampleCount);
+                double db = 20.0 * Math.log10(rms + 1e-10);
+                rawDb[barsFilled++] = db;
+                if (db > maxDb) maxDb = db;
+                barSum = 0; barSampleCount = 0;
+              }
+            }
+          }
+          decoder.releaseOutputBuffer(outIdx, false);
+          if ((info.flags & android.media.MediaCodec.BUFFER_FLAG_END_OF_STREAM) != 0) outputDone = true;
+        }
+      }
+    } catch (Exception e) {
+      Log.e(LOG_TAG, "decodeOggEnergyBars error: " + e.getMessage());
+    } finally {
+      if (decoder != null) { try { decoder.stop(); decoder.release(); } catch (Exception ignored) {} }
+      if (extractor != null) { extractor.release(); }
+    }
+
+    if (barsFilled == 0) return new double[0];
+    double floor = maxDb - 60;
+    double range = (maxDb - floor) < 1e-9 ? 1.0 : maxDb - floor;
+    double[] energies = new double[barsFilled];
+    for (int i = 0; i < barsFilled; i++) {
+      energies[i] = Math.max(0, Math.min(1.0, (rawDb[i] - floor) / range));
+    }
+    return energies;
+  }
+
   private int readPcmChunk(FileInputStream fis, byte[] buf) throws java.io.IOException {
     int total = 0;
     while (total < buf.length) {
@@ -1485,32 +1593,8 @@ public class MainActivity extends AppCompatActivity {
           });
         });
       } else {
-        // Decode energy bars via OggPcmDataSource
-        PcmDataSource src = new PcmDataSource.OggPcmDataSource(opusPath, durationMs);
-        final int MAX_BARS = 5000;
-        long samplesPerBar = Math.max(512, totalSamples / MAX_BARS);
-        int barCount = (int) (totalSamples / samplesPerBar);
-        if (barCount == 0) barCount = 1;
-        short[] buf = new short[(int) samplesPerBar];
-        double[] rawDb = new double[barCount];
-        double maxDb = -999;
-        for (int i = 0; i < barCount; i++) {
-          int n = src.read(i * samplesPerBar, buf, (int) samplesPerBar);
-          if (n <= 0) break;
-          double sum = 0;
-          for (int j = 0; j < n; j++) sum += (double) buf[j] * buf[j];
-          double rms = Math.sqrt(sum / n);
-          double db = 20.0 * Math.log10(rms + 1e-10);
-          rawDb[i] = db;
-          if (db > maxDb) maxDb = db;
-        }
-        src.close();
-        double floor = maxDb - 60;
-        double range = (maxDb - floor) < 1e-9 ? 1.0 : maxDb - floor;
-        double[] energies = new double[barCount];
-        for (int i = 0; i < barCount; i++) {
-          energies[i] = Math.max(0, Math.min(1.0, (rawDb[i] - floor) / range));
-        }
+        // Single-pass sequential OGG decode → energy bars (no random seek, one decoder)
+        double[] energies = decodeOggEnergyBars(opusPath, totalSamples);
         final double[] finalEnergies = energies;
         runOnUiThread(() -> {
           VoiceRectView vv = findViewById(R.id.voiceRectView);

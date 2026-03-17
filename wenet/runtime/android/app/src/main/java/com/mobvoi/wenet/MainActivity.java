@@ -907,8 +907,6 @@ public class MainActivity extends AppCompatActivity {
           // Save result.json with timed result
           saveTimedResult();
           // Compress PCM to Opus 6kbps (synchronous, runs in this background thread)
-          runOnUiThread(() -> Toast.makeText(MainActivity.this,
-              "인코딩 중...", Toast.LENGTH_LONG).show());
           compressToOpus(currentRecordingName);
           // Build timestamped text for copy & Slack
           try {
@@ -979,6 +977,9 @@ public class MainActivity extends AppCompatActivity {
         boolean inputDone = false;
         boolean outputDone = false;
         long presentationUs = 0;
+        final long totalDurationUs = pcmFile.length() * 1_000_000L / (SAMPLE_RATE * 2);
+        final android.widget.Toast[] progressToast = {null};
+        int lastToastPct = -1;
 
         while (!outputDone) {
           if (!inputDone) {
@@ -995,6 +996,20 @@ public class MainActivity extends AppCompatActivity {
                 inBuf.put(pcmBuf, 0, bytesRead);
                 encoder.queueInputBuffer(inIdx, 0, bytesRead, presentationUs, 0);
                 presentationUs += (long) bytesRead * 1000000 / (SAMPLE_RATE * 2);
+                if (totalDurationUs > 0) {
+                  int pct = (int) (presentationUs * 100 / totalDurationUs);
+                  int step = (pct / 10) * 10;
+                  if (step != lastToastPct) {
+                    lastToastPct = step;
+                    final int showPct = step;
+                    runOnUiThread(() -> {
+                      if (progressToast[0] != null) progressToast[0].cancel();
+                      progressToast[0] = android.widget.Toast.makeText(
+                          MainActivity.this, "인코딩 중... " + showPct + "%", android.widget.Toast.LENGTH_SHORT);
+                      progressToast[0].show();
+                    });
+                  }
+                }
               }
             }
           }

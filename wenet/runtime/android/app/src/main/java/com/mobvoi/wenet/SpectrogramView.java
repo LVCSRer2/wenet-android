@@ -13,10 +13,6 @@ import android.view.VelocityTracker;
 import android.view.View;
 import android.widget.OverScroller;
 import java.io.File;
-import java.io.FileInputStream;
-import java.nio.ByteBuffer;
-import java.nio.ByteOrder;
-import java.nio.channels.FileChannel;
 
 public class SpectrogramView extends View {
 
@@ -43,7 +39,7 @@ public class SpectrogramView extends View {
     private boolean userScrolling = false;
 
     // On-demand window rendering
-    private String pcmFilePath = null;
+    private PcmDataSource dataSource = null;
     private volatile boolean windowLoading = false;
     private Bitmap windowBitmap = null;
     private double lastRenderedOffsetMs = -100000;
@@ -189,8 +185,18 @@ public class SpectrogramView extends View {
     // --- Playback mode ---
 
     public void setFullSpectrogramFromFile(String filePath, long totalSamplesCount) {
+        try {
+            PcmDataSource src = new PcmDataSource.FilePcmDataSource(filePath);
+            setDataSource(src, totalSamplesCount);
+        } catch (Exception e) {
+            Log.e("SpectrogramView", "setFullSpectrogramFromFile error: " + e.getMessage());
+        }
+    }
+
+    public void setDataSource(PcmDataSource source, long totalSamplesCount) {
         synchronized (lock) {
-            pcmFilePath = filePath;
+            if (dataSource != null) { dataSource.close(); }
+            dataSource = source;
             totalSamples = totalSamplesCount;
             totalDurationMs = totalSamples * 1000L / SAMPLE_RATE;
             userScrolling = false;
@@ -210,7 +216,7 @@ public class SpectrogramView extends View {
     }
 
     private void triggerWindowLoadIfNeeded() {
-        if (windowLoading || pcmFilePath == null) return;
+        if (windowLoading || dataSource == null) return;
         int viewW = getWidth();
         if (viewW <= 0) return;
 
@@ -226,71 +232,55 @@ public class SpectrogramView extends View {
     private void loadWindowAsync(final double offsetMs, final float visSec, final int width) {
         if (windowLoading) return;
         windowLoading = true;
-        final String path = pcmFilePath;
         new Thread(() -> {
-            loadWindowSync(path, offsetMs, visSec, width);
+            loadWindowSync(offsetMs, visSec, width);
             windowLoading = false;
             postInvalidate();
         }).start();
     }
 
-    private void loadWindowSync(String path, double offsetMs, float visSec, int width) {
-        if (path == null || width <= 0) return;
-        File file = new File(path);
-        if (!file.exists()) return;
+    private void loadWindowSync(double offsetMs, float visSec, int width) {
+        PcmDataSource src;
+        long totalFileSamples;
+        synchronized (lock) {
+            src = dataSource;
+            totalFileSamples = totalSamples;
+        }
+        if (src == null || width <= 0) return;
 
-        // Resolution-independent rendering: exactly 'width' columns
         Bitmap bmp = Bitmap.createBitmap(width, FREQ_BINS, Bitmap.Config.ARGB_8888);
         bmp.eraseColor(Color.BLACK);
 
-        try (FileInputStream fis = new FileInputStream(path)) {
-            FileChannel channel = fis.getChannel();
-            long totalFileSamples = file.length() / 2;
-            long startSampleGlobal = (long) (offsetMs * SAMPLE_RATE / 1000.0);
-            double totalSamplesInWindow = (double) visSec * SAMPLE_RATE;
-            double samplesPerColumn = totalSamplesInWindow / width;
+        long startSampleGlobal = (long) (offsetMs * SAMPLE_RATE / 1000.0);
+        double totalSamplesInWindow = (double) visSec * SAMPLE_RATE;
+        double samplesPerColumn = totalSamplesInWindow / width;
 
-            double[] wr = new double[FFT_SIZE], wi = new double[FFT_SIZE];
-            int[] pr = new int[FREQ_BINS];
-            double floor = dbFloor, ceil = dbCeil, range = Math.max(1.0, ceil - floor);
+        double[] wr = new double[FFT_SIZE], wi = new double[FFT_SIZE];
+        int[] pr = new int[FREQ_BINS];
+        double floor = dbFloor, ceil = dbCeil, range = Math.max(1.0, ceil - floor);
+        short[] shortBuf = new short[FFT_SIZE];
 
-            // Reusable buffer for FFT_SIZE samples
-            ByteBuffer byteBuf = ByteBuffer.allocateDirect(FFT_SIZE * 2).order(ByteOrder.LITTLE_ENDIAN);
-            short[] shortBuf = new short[FFT_SIZE];
+        for (int col = 0; col < width; col++) {
+            long colStartSample = startSampleGlobal + (long) (col * samplesPerColumn);
+            if (colStartSample >= totalFileSamples) break;
 
-            for (int col = 0; col < width; col++) {
-                long colStartSample = startSampleGlobal + (long) (col * samplesPerColumn);
-                if (colStartSample >= totalFileSamples) break;
+            int samplesRead = src.read(colStartSample, shortBuf, FFT_SIZE);
+            if (samplesRead <= 0) break;
 
-                // Seek and read exactly what we need for one FFT
-                channel.position(colStartSample * 2);
-                byteBuf.clear();
-                int bytesRead = channel.read(byteBuf);
-                if (bytesRead <= 0) break;
-                
-                byteBuf.flip();
-                int samplesRead = bytesRead / 2;
-                byteBuf.asShortBuffer().get(shortBuf, 0, samplesRead);
-
-                // Apply Hann window and process FFT
-                for (int i = 0; i < samplesRead; i++) {
-                    wr[i] = shortBuf[i] * hannWindow[i];
-                    wi[i] = 0.0;
-                }
-                // Pad with zeros if we ran out of file data
-                for (int i = samplesRead; i < FFT_SIZE; i++) wr[i] = wi[i] = 0.0;
-
-                fft(wr, wi, FFT_SIZE);
-                for (int k = 0; k < FREQ_BINS; k++) {
-                    double mag = Math.sqrt(wr[k] * wr[k] + wi[k] * wi[k]) / FFT_SIZE;
-                    double db = 20.0 * Math.log10(mag + 1e-10);
-                    double norm = Math.max(0.0, Math.min(1.0, (db - floor) / range));
-                    pr[FREQ_BINS - 1 - k] = heatmapColor(norm);
-                }
-                bmp.setPixels(pr, 0, 1, col, 0, 1, FREQ_BINS);
+            for (int i = 0; i < samplesRead; i++) {
+                wr[i] = shortBuf[i] * hannWindow[i];
+                wi[i] = 0.0;
             }
-        } catch (Exception e) {
-            Log.e("SpectrogramView", "loadWindowSync error: " + e.getMessage());
+            for (int i = samplesRead; i < FFT_SIZE; i++) wr[i] = wi[i] = 0.0;
+
+            fft(wr, wi, FFT_SIZE);
+            for (int k = 0; k < FREQ_BINS; k++) {
+                double mag = Math.sqrt(wr[k] * wr[k] + wi[k] * wi[k]) / FFT_SIZE;
+                double db = 20.0 * Math.log10(mag + 1e-10);
+                double norm = Math.max(0.0, Math.min(1.0, (db - floor) / range));
+                pr[FREQ_BINS - 1 - k] = heatmapColor(norm);
+            }
+            bmp.setPixels(pr, 0, 1, col, 0, 1, FREQ_BINS);
         }
 
         synchronized (lock) {
@@ -300,16 +290,6 @@ public class SpectrogramView extends View {
             lastRenderedVisibleSec = visSec;
             lastRenderedWidth = width;
         }
-    }
-
-    private int readStreamFully(FileInputStream fis, byte[] buf) throws java.io.IOException {
-        int total = 0;
-        while (total < buf.length) {
-            int read = fis.read(buf, total, buf.length - total);
-            if (read < 0) break;
-            total += read;
-        }
-        return total;
     }
 
     public void setCursorPosition(float fraction) {
@@ -334,8 +314,9 @@ public class SpectrogramView extends View {
     }
 
     public void clearPlaybackMode() {
-        playbackMode = false; cursorFraction = -1f; pcmFilePath = null;
+        playbackMode = false; cursorFraction = -1f;
         synchronized (lock) {
+            if (dataSource != null) { dataSource.close(); dataSource = null; }
             if (windowBitmap != null) { windowBitmap.recycle(); windowBitmap = null; }
             totalDurationMs = 0; scrollOffsetMs = 0.0; userScrolling = false;
         }
@@ -491,7 +472,7 @@ public class SpectrogramView extends View {
     public void setDbRange(double floor, double ceil) { this.dbFloor = floor; this.dbCeil = ceil; reloadIfPlayback(); }
 
     private void reloadIfPlayback() {
-        if (playbackMode && pcmFilePath != null) {
+        if (playbackMode && dataSource != null) {
             windowLoading = false;
             triggerWindowLoadIfNeeded();
         } else {

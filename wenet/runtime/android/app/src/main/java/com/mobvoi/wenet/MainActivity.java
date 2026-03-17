@@ -159,17 +159,19 @@ public class MainActivity extends AppCompatActivity {
   private String currentRecordingName = null;
   private FileOutputStream pcmOutputStream = null;
 
-  // Playback (file-streaming, no full load into memory)
-  private AudioTrack audioTrack = null;
-  private String playbackAudioPath = null;
-  private long pcmFileLength = 0;
+  // Playback (OGG streaming)
+  private OggStreamPlayer oggPlayer = null;
+  private String playbackAudioPath = null; // OGG path
+  private long playbackDurationMs = 0;
   private boolean isPlaying = false;
-  private volatile long playbackPositionBytes = 0;
-  private volatile long playbackStartBytes = 0; // file offset where current playback started
+  private volatile long playbackPositionMs = 0;
   private boolean userSeekingBar = false;
-  private Thread playbackThread = null;
   private final Handler uiHandler = new Handler(Looper.getMainLooper());
   private Runnable playbackUpdater;
+  // Legacy fields kept for AudioTrack/PCM compat (used only in update helpers)
+  private AudioTrack audioTrack = null;
+  private long playbackStartBytes = 0;
+  private long pcmFileLength = 0;
 
   // Karaoke
   private List<WordSpan> wordSpans = null;
@@ -1374,167 +1376,87 @@ public class MainActivity extends AppCompatActivity {
     if (getSupportActionBar() != null) getSupportActionBar().setTitle(recordingName);
 
     String opusPath = RecordingManager.getOpusPath(this, recordingName);
-    File opusFile = new File(opusPath);
-
-    if (!opusFile.exists()) {
+    if (!new File(opusPath).exists()) {
       Toast.makeText(this, "Audio file not found", Toast.LENGTH_SHORT).show();
       return;
     }
-    // Show decode progress dialog
-    android.app.AlertDialog.Builder builder = new android.app.AlertDialog.Builder(this);
-    android.view.View dialogView = getLayoutInflater().inflate(android.R.layout.activity_list_item, null);
-    android.widget.ProgressBar progressBar = new android.widget.ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal);
-    progressBar.setMax(100);
-    progressBar.setProgress(0);
-    android.widget.TextView progressText = new android.widget.TextView(this);
-    progressText.setText("0%");
-    progressText.setGravity(android.view.Gravity.CENTER);
-    android.widget.LinearLayout layout = new android.widget.LinearLayout(this);
-    layout.setOrientation(android.widget.LinearLayout.VERTICAL);
-    layout.setPadding(48, 32, 48, 16);
-    layout.addView(progressBar);
-    layout.addView(progressText);
-    builder.setTitle("오디오 디코딩 중...").setView(layout).setCancelable(false);
-    android.app.AlertDialog dialog = builder.create();
-    dialog.show();
 
-    new Thread(() -> {
-      String tempPcm = new File(getCacheDir(), recordingName + "_temp.pcm").getAbsolutePath();
-      boolean ok = decodeOpusToPcm(opusPath, tempPcm, pct -> runOnUiThread(() -> {
-        progressBar.setProgress(pct);
-        progressText.setText(pct + "%");
-      }));
-      runOnUiThread(() -> {
-        dialog.dismiss();
-        if (ok) {
-          enterPlaybackModeWithPcm(recordingName, tempPcm);
-        } else {
-          Toast.makeText(this, "오디오 디코딩 실패", Toast.LENGTH_SHORT).show();
+    // Prepare OggStreamPlayer synchronously (lightweight: opens extractor only)
+    OggStreamPlayer player = new OggStreamPlayer(opusPath);
+    if (!player.prepare()) {
+      Toast.makeText(this, "오디오 열기 실패", Toast.LENGTH_SHORT).show();
+      return;
+    }
+
+    playbackAudioPath = opusPath;
+    playbackDurationMs = player.getTotalDurationMs();
+    pcmFileLength = playbackDurationMs * SAMPLE_RATE * 2 / 1000; // virtual, for bytesToMs compat
+
+    if (oggPlayer != null) { oggPlayer.release(); }
+    oggPlayer = player;
+
+    oggPlayer.setListener(new OggStreamPlayer.Listener() {
+      @Override public void onPositionMs(int ms) {
+        if (!userSeekingBar && isPlaying) {
+          playbackPositionMs = ms;
+          updatePlaybackUI(ms);
+          updateKaraokeHighlight(ms);
+          updateVisualizationCursor(ms);
         }
-      });
-    }).start();
+      }
+      @Override public void onPlaybackComplete() {
+        isPlaying = false;
+        playbackPositionMs = 0;
+        Button ppBtn = findViewById(R.id.playPauseButton);
+        ppBtn.setText("Play");
+        updatePlaybackUI(0);
+        updateKaraokeHighlight(0);
+        if (useSpectrogram) {
+          ((SpectrogramView) findViewById(R.id.spectrogramView)).setCursorPosition(0f);
+        } else {
+          ((VoiceRectView) findViewById(R.id.voiceRectView)).setCursorPosition(0f);
+        }
+        ((VadProbView) findViewById(R.id.vadProbView)).setCursorPosition(0f);
+      }
+    });
+
+    enterPlaybackModeWithOgg(recordingName, opusPath, playbackDurationMs);
   }
 
-  private void enterPlaybackModeWithPcm(String recordingName, String audioPath) {
-    File audioFile = new File(audioPath);
+  private void enterPlaybackModeWithOgg(String recordingName, String opusPath, long durationMs) {
+    int durMs = (int) Math.min(durationMs, Integer.MAX_VALUE);
 
-    playbackAudioPath = audioPath;
-    pcmFileLength = audioFile.length();
-    int durationMs = (int) (pcmFileLength * 1000L / (SAMPLE_RATE * 2));
-
-    // Load word spans
     wordSpans = loadWordSpans(recordingName);
-
-    // Build timestamped text from word spans
     timestampedResult = buildTimestampedTextFromSpans(wordSpans);
 
-    // Show playback controls
     LinearLayout playbackLayout = findViewById(R.id.playbackLayout);
     playbackLayout.setVisibility(View.VISIBLE);
 
-    // Set up seekbar
     SeekBar seekBar = findViewById(R.id.seekBar);
-    seekBar.setMax(durationMs);
+    seekBar.setMax(durMs);
     seekBar.setProgress(0);
 
     TextView timeText = findViewById(R.id.timeTextView);
-    timeText.setText(formatTimeMs(0) + "/" + formatTimeMs(durationMs));
+    timeText.setText(formatTimeMs(0) + "/" + formatTimeMs(durMs));
 
     Button playPauseButton = findViewById(R.id.playPauseButton);
     playPauseButton.setText("Play");
 
-    playbackPositionBytes = 0;
+    playbackPositionMs = 0;
     isPlaying = false;
 
-    // Build karaoke text once, then highlight
     buildKaraokeText();
     updateKaraokeHighlight(0);
 
-    // Load full PCM for DAW visualization (background thread to avoid ANR)
-    new Thread(() -> loadFullVisualization(audioPath)).start();
+    // Load visualization in background (no full decode needed for waveform energy bars)
+    new Thread(() -> loadFullVisualizationOgg(opusPath, durationMs)).start();
   }
 
-  private void loadFullVisualization(String audioPath) {
-    try {
-      File f = new File(audioPath);
-      if (!f.exists() || f.length() == 0) return;
-
-      long fileSize = f.length();
-      long totalSamples = fileSize / 2;
-      long durationMs = totalSamples * 1000L / SAMPLE_RATE;
-
-      if (useSpectrogram) {
-        // setFullSpectrogramFromFile does its own streaming
-        SpectrogramView sv = findViewById(R.id.spectrogramView);
-        sv.setFullSpectrogramFromFile(audioPath, totalSamples);
-        runOnUiThread(() -> sv.setOnPlaybackSeekListener(new SpectrogramView.OnPlaybackSeekListener() {
-          @Override
-          public void onSeek(int ms) {
-            seekToMs(ms);
-          }
-
-          @Override
-          public void onZoomChanged(float visibleSeconds) {
-            // Sync waveform view zoom if it exists
-            VoiceRectView vv = findViewById(R.id.voiceRectView);
-            vv.setVisibleSeconds(visibleSeconds);
-          }
-        }));
-      } else {
-        // Stream file to compute energy bars; cap to 10000 bars for performance
-        final int MAX_BARS = 10000;
-        long samplesPerBar = Math.max(512, totalSamples / MAX_BARS);
-        int barCount = (int) (totalSamples / samplesPerBar);
-        if (barCount == 0) barCount = 1;
-        double[] rawDb = new double[barCount];
-        double maxDb = -999;
-        try (FileInputStream fis = new FileInputStream(f)) {
-          byte[] chunk = new byte[(int) (samplesPerBar * 2)];
-          for (int i = 0; i < barCount; i++) {
-            int read = readPcmChunk(fis, chunk);
-            if (read < chunk.length) break;
-            double sum = 0;
-            for (int j = 0; j < (int) samplesPerBar; j++) {
-              short s = (short) ((chunk[j * 2] & 0xFF) | (chunk[j * 2 + 1] << 8));
-              sum += (double) s * s;
-            }
-            double rms = Math.sqrt(sum / samplesPerBar);
-            double db = 20.0 * Math.log10(rms + 1e-10);
-            rawDb[i] = db;
-            if (db > maxDb) maxDb = db;
-          }
-        }
-        double floor = maxDb - 60;
-        double range = (maxDb - floor) < 1e-9 ? 1.0 : maxDb - floor;
-        double[] energies = new double[barCount];
-        for (int i = 0; i < barCount; i++) {
-          energies[i] = Math.max(0, Math.min(1.0, (rawDb[i] - floor) / range));
-        }
-        final double[] finalEnergies = energies;
-        final int finalDurationMs = (int) Math.min(durationMs, Integer.MAX_VALUE);
-        runOnUiThread(() -> {
-          VoiceRectView vv = findViewById(R.id.voiceRectView);
-          vv.setFullWaveform(finalEnergies, finalDurationMs);
-          vv.setOnPlaybackSeekListener(new VoiceRectView.OnPlaybackSeekListener() {
-            @Override
-            public void onSeek(int ms) {
-              seekToMs(ms);
-            }
-
-            @Override
-            public void onZoomChanged(float visibleSeconds) {
-              // Sync spectrogram if it's being used
-              SpectrogramView sv = findViewById(R.id.spectrogramView);
-              sv.setWindowSizeMs((int) (visibleSeconds * 1000));
-            }
-          });
-        });
-      }
-    } catch (Exception e) {
-      Log.e(LOG_TAG, "Error loading full visualization: " + e.getMessage());
-    }
-  }
-
+  /**
+   * Loads visualization data from OGG without full pre-decode.
+   * Waveform: decoded progressively via PcmDataSource (on-demand per-bar window).
+   * Spectrogram: OggPcmDataSource passed directly (decodes on-demand per-column).
+   */
   private int readPcmChunk(FileInputStream fis, byte[] buf) throws java.io.IOException {
     int total = 0;
     while (total < buf.length) {
@@ -1543,6 +1465,67 @@ public class MainActivity extends AppCompatActivity {
       total += read;
     }
     return total;
+  }
+
+  private void loadFullVisualizationOgg(String opusPath, long durationMs) {
+    try {
+      long totalSamples = durationMs * SAMPLE_RATE / 1000;
+      int durMs = (int) Math.min(durationMs, Integer.MAX_VALUE);
+
+      if (useSpectrogram) {
+        PcmDataSource src = new PcmDataSource.OggPcmDataSource(opusPath, durationMs);
+        SpectrogramView sv = findViewById(R.id.spectrogramView);
+        runOnUiThread(() -> {
+          sv.setDataSource(src, totalSamples);
+          sv.setOnPlaybackSeekListener(new SpectrogramView.OnPlaybackSeekListener() {
+            @Override public void onSeek(int ms) { seekToMs(ms); }
+            @Override public void onZoomChanged(float visibleSeconds) {
+              ((VoiceRectView) findViewById(R.id.voiceRectView)).setVisibleSeconds(visibleSeconds);
+            }
+          });
+        });
+      } else {
+        // Decode energy bars via OggPcmDataSource
+        PcmDataSource src = new PcmDataSource.OggPcmDataSource(opusPath, durationMs);
+        final int MAX_BARS = 5000;
+        long samplesPerBar = Math.max(512, totalSamples / MAX_BARS);
+        int barCount = (int) (totalSamples / samplesPerBar);
+        if (barCount == 0) barCount = 1;
+        short[] buf = new short[(int) samplesPerBar];
+        double[] rawDb = new double[barCount];
+        double maxDb = -999;
+        for (int i = 0; i < barCount; i++) {
+          int n = src.read(i * samplesPerBar, buf, (int) samplesPerBar);
+          if (n <= 0) break;
+          double sum = 0;
+          for (int j = 0; j < n; j++) sum += (double) buf[j] * buf[j];
+          double rms = Math.sqrt(sum / n);
+          double db = 20.0 * Math.log10(rms + 1e-10);
+          rawDb[i] = db;
+          if (db > maxDb) maxDb = db;
+        }
+        src.close();
+        double floor = maxDb - 60;
+        double range = (maxDb - floor) < 1e-9 ? 1.0 : maxDb - floor;
+        double[] energies = new double[barCount];
+        for (int i = 0; i < barCount; i++) {
+          energies[i] = Math.max(0, Math.min(1.0, (rawDb[i] - floor) / range));
+        }
+        final double[] finalEnergies = energies;
+        runOnUiThread(() -> {
+          VoiceRectView vv = findViewById(R.id.voiceRectView);
+          vv.setFullWaveform(finalEnergies, durMs);
+          vv.setOnPlaybackSeekListener(new VoiceRectView.OnPlaybackSeekListener() {
+            @Override public void onSeek(int ms) { seekToMs(ms); }
+            @Override public void onZoomChanged(float visibleSeconds) {
+              ((SpectrogramView) findViewById(R.id.spectrogramView)).setWindowSizeMs((int) (visibleSeconds * 1000));
+            }
+          });
+        });
+      }
+    } catch (Exception e) {
+      Log.e(LOG_TAG, "loadFullVisualizationOgg error: " + e.getMessage());
+    }
   }
 
   private List<WordSpan> loadWordSpans(String recordingName) {
@@ -1581,35 +1564,18 @@ public class MainActivity extends AppCompatActivity {
   }
 
   private void resumePlayback() {
-    if (playbackAudioPath == null) return;
+    if (playbackAudioPath == null || oggPlayer == null) return;
 
     if (startRecord) {
       startRecord = false;
       Recognize.setInputFinished();
       Button button = findViewById(R.id.button);
       button.setText("Record");
-      
-      // Stop BT mic immediately to trigger profile switch
       stopBluetoothMic();
-      
-      // Wait longer for hardware to switch from HFP/SCO to A2DP
       try { Thread.sleep(500); } catch (InterruptedException ignored) {}
     }
 
-    isPlaying = true;
-    Button playPauseButton = findViewById(R.id.playPauseButton);
-    playPauseButton.setText("Pause");
-
-    resumePlaybackPcm();
-
-    // Start UI updater
-    startPlaybackUpdater();
-  }
-
-
-
-  private void resumePlaybackPcm() {
-    // 1. Reset system audio state and release SCO
+    // Reset audio routing
     try {
       audioManager.setMode(AudioManager.MODE_NORMAL);
       audioManager.setBluetoothScoOn(false);
@@ -1619,207 +1585,67 @@ public class MainActivity extends AppCompatActivity {
       } else {
         audioManager.stopBluetoothSco();
       }
-      Log.i(LOG_TAG, "Audio state reset to NORMAL, speakerphone OFF for playback");
-    } catch (Exception e) {
-      Log.e(LOG_TAG, "Error resetting audio state: " + e.getMessage());
-    }
+    } catch (Exception ignored) {}
 
-    // 2. Request Audio Focus (Crucial for system to route audio correctly)
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-      android.media.AudioFocusRequest focusRequest = new android.media.AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN)
+      audioManager.requestAudioFocus(new android.media.AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN)
           .setAudioAttributes(new AudioAttributes.Builder()
               .setUsage(AudioAttributes.USAGE_MEDIA)
               .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
               .build())
-          .build();
-      audioManager.requestAudioFocus(focusRequest);
+          .build());
     } else {
       audioManager.requestAudioFocus(null, AudioManager.STREAM_MUSIC, AudioManager.AUDIOFOCUS_GAIN);
     }
 
-    // 3. Release existing AudioTrack
-    if (audioTrack != null) {
-      try {
-        audioTrack.stop();
-        audioTrack.release();
-      } catch (Exception ignored) {}
-      audioTrack = null;
-    }
+    isPlaying = true;
+    Button playPauseButton = findViewById(R.id.playPauseButton);
+    playPauseButton.setText("Pause");
 
-    // 4. Create new AudioTrack with standard MEDIA attributes
-    // Let the system handle routing automatically (usually more reliable than manual)
-    int bufSize = AudioTrack.getMinBufferSize(SAMPLE_RATE,
-        AudioFormat.CHANNEL_OUT_MONO, AudioFormat.ENCODING_PCM_16BIT);
-
-    audioTrack = new AudioTrack.Builder()
-        .setAudioAttributes(new AudioAttributes.Builder()
-            .setUsage(AudioAttributes.USAGE_MEDIA)
-            .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
-            .build())
-        .setAudioFormat(new AudioFormat.Builder()
-            .setSampleRate(SAMPLE_RATE)
-            .setChannelMask(AudioFormat.CHANNEL_OUT_MONO)
-            .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
-            .build())
-        .setBufferSizeInBytes(bufSize)
-        .setTransferMode(AudioTrack.MODE_STREAM)
-        .build();
-
-    Log.i(LOG_TAG, "AudioTrack created with standard USAGE_MEDIA");
-    audioTrack.play();
-    playbackStartBytes = playbackPositionBytes;
-
-    // Start playback thread — streams from file
-    final AudioTrack myTrack = audioTrack; // capture locally to avoid null race
-    playbackThread = new Thread(() -> {
-      FileInputStream fis = null;
-      try {
-        fis = new FileInputStream(playbackAudioPath);
-        long skipped = 0;
-        long toSkip = playbackPositionBytes;
-        while (skipped < toSkip) {
-          long s = fis.skip(toSkip - skipped);
-          if (s <= 0) break;
-          skipped += s;
-        }
-        byte[] chunk = new byte[bufSize];
-        long pos = playbackPositionBytes;
-        while (isPlaying && pos < pcmFileLength && playbackThread == Thread.currentThread()) {
-          int toRead = (int) Math.min(chunk.length, pcmFileLength - pos);
-          int bytesRead = fis.read(chunk, 0, toRead);
-          if (bytesRead <= 0) break;
-          if (myTrack == null) break;
-          int written = myTrack.write(chunk, 0, bytesRead);
-          if (written > 0) {
-            pos += written;
-            if (isPlaying) {
-              playbackPositionBytes = pos;
-            }
-          } else {
-            break;
-          }
-        }
-      } catch (IOException e) {
-        Log.e(LOG_TAG, "Playback stream error: " + e.getMessage());
-      } finally {
-        if (fis != null) {
-          try { fis.close(); } catch (IOException ignored) {}
-        }
-      }
-      if (isPlaying && playbackPositionBytes >= pcmFileLength) {
-        runOnUiThread(() -> {
-          isPlaying = false;
-          playbackPositionBytes = 0;
-          Button ppBtn = findViewById(R.id.playPauseButton);
-          ppBtn.setText("Play");
-          updatePlaybackUI(0);
-          updateKaraokeHighlight(0);
-          // Reset cursor to start, keep visualization intact
-          if (useSpectrogram) {
-            ((SpectrogramView) findViewById(R.id.spectrogramView)).setCursorPosition(0f);
-          } else {
-            ((VoiceRectView) findViewById(R.id.voiceRectView)).setCursorPosition(0f);
-          }
-          ((VadProbView) findViewById(R.id.vadProbView)).setCursorPosition(0f);
-        });
-      }
-    });
-    playbackThread.start();
+    oggPlayer.resume(playbackPositionMs);
   }
 
   private void pausePlayback() {
+    if (oggPlayer != null) {
+      playbackPositionMs = oggPlayer.pause();
+    }
     isPlaying = false;
     Button playPauseButton = findViewById(R.id.playPauseButton);
     playPauseButton.setText("Play");
     stopPlaybackUpdater();
-    if (audioTrack != null) {
-      try {
-        // Sync position to actual hardware playback head before stopping
-        long framesPlayed = audioTrack.getPlaybackHeadPosition() & 0xFFFFFFFFL;
-        playbackPositionBytes = playbackStartBytes + framesPlayed * 2;
-        audioTrack.pause();
-        audioTrack.flush();
-        audioTrack.stop();
-        audioTrack.release();
-      } catch (IllegalStateException e) {
-        Log.e(LOG_TAG, "Error stopping AudioTrack: " + e.getMessage());
-      }
-      audioTrack = null;
-    }
-    if (playbackThread != null) {
-      try { playbackThread.join(500); } catch (InterruptedException ignored) {}
-      playbackThread = null;
-    }
   }
 
   private void stopPlayback() {
     isPlaying = false;
     stopPlaybackUpdater();
-    if (audioTrack != null) {
-      try {
-        audioTrack.pause();
-        audioTrack.flush();
-        audioTrack.stop();
-        audioTrack.release();
-      } catch (IllegalStateException e) {
-        Log.e(LOG_TAG, "Error stopping AudioTrack: " + e.getMessage());
-      }
-      audioTrack = null;
+    if (oggPlayer != null) {
+      oggPlayer.release();
+      oggPlayer = null;
     }
-    playbackPositionBytes = 0;
+    playbackPositionMs = 0;
     playbackAudioPath = null;
+    playbackDurationMs = 0;
     pcmFileLength = 0;
-    // Clear DAW visualization
     ((VoiceRectView) findViewById(R.id.voiceRectView)).clearPlaybackMode();
     ((SpectrogramView) findViewById(R.id.spectrogramView)).clearPlaybackMode();
     ((VadProbView) findViewById(R.id.vadProbView)).clearPlaybackMode();
   }
 
   private void seekToMs(int ms) {
-    long bytePos = (long) ms * SAMPLE_RATE * 2 / 1000;
-    bytePos = bytePos & ~1L;
-    if (bytePos < 0) bytePos = 0;
-    if (bytePos > pcmFileLength) bytePos = pcmFileLength;
-
+    if (ms < 0) ms = 0;
+    if (ms > playbackDurationMs) ms = (int) playbackDurationMs;
     boolean wasPlaying = isPlaying;
-    if (wasPlaying) {
-      pausePlayback();
-    }
-    playbackPositionBytes = bytePos;
+    if (wasPlaying) pausePlayback();
+    playbackPositionMs = ms;
     updatePlaybackUI(ms);
     updateKaraokeHighlight(ms);
     updateVisualizationCursor(ms);
-    if (wasPlaying) {
-      resumePlayback();
-    }
+    if (wasPlaying) resumePlayback();
   }
 
   private void startPlaybackUpdater() {
+    // OGG player calls onPositionMs directly; this updater is kept for seekBar drag-only updates
     stopPlaybackUpdater();
-    playbackUpdater = new Runnable() {
-      @Override
-      public void run() {
-        if (isPlaying) {
-          if (!userSeekingBar) {
-            int ms;
-            AudioTrack at = audioTrack;
-            if (at != null) {
-              // Use hardware playback head for accurate position
-              long framesPlayed = at.getPlaybackHeadPosition() & 0xFFFFFFFFL;
-              long actualBytes = playbackStartBytes + framesPlayed * 2; // 16-bit mono = 2 bytes/frame
-              ms = bytesToMs(actualBytes);
-            } else {
-              ms = bytesToMs(playbackPositionBytes);
-            }
-            updatePlaybackUI(ms);
-            updateKaraokeHighlight(ms);
-            updateVisualizationCursor(ms);
-          }
-          uiHandler.postDelayed(this, PLAYBACK_UPDATE_MS);
-        }
-      }
-    };
-    uiHandler.post(playbackUpdater);
   }
 
   private void stopPlaybackUpdater() {
@@ -1843,7 +1669,7 @@ public class MainActivity extends AppCompatActivity {
   private void updatePlaybackUI(int currentMs) {
     SeekBar seekBar = findViewById(R.id.seekBar);
     TextView timeText = findViewById(R.id.timeTextView);
-    int durationMs = (int) (pcmFileLength * 1000L / (SAMPLE_RATE * 2));
+    int durationMs = (int) playbackDurationMs;
     seekBar.setProgress(currentMs);
     timeText.setText(formatTimeMs(currentMs) + "/" + formatTimeMs(durationMs));
   }

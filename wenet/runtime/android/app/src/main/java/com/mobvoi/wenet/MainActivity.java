@@ -158,15 +158,8 @@ public class MainActivity extends AppCompatActivity {
   private int lastAppendedConfirmedLength = 0; // chars from cachedConfirmedText already in TextView
   private String currentRecordingName = null;
 
-  // Realtime Opus encoder
-  private android.media.MediaCodec realtimeEncoder = null;
-  private android.media.MediaMuxer realtimeMuxer = null;
-  private int realtimeMuxerTrack = -1;
-  private boolean realtimeMuxerStarted = false;
-  private long realtimePresentationUs = 0;
-  private short[] encoderAccumBuf = null;
-  private int encoderAccumFilled = 0;
-  private static final int OPUS_FRAME_SAMPLES = 160; // 20ms at 8kHz
+  // Realtime encoder
+  private RealtimeEncoder realtimeEncoder = new RealtimeEncoder();
 
   // Playback (OGG streaming)
   private OggStreamPlayer oggPlayer = null;
@@ -375,7 +368,10 @@ public class MainActivity extends AppCompatActivity {
         else if ("amrnb".equals(codec)) audioOutPath = RecordingManager.getAmrPath(this, currentRecordingName);
         else if ("aac_hw".equals(codec)) audioOutPath = RecordingManager.getAacPath(this, currentRecordingName);
         else audioOutPath = RecordingManager.getOpusPath(this, currentRecordingName);
-        startRealtimeEncoder(audioOutPath, codec);
+        realtimeEncoder = new RealtimeEncoder();
+        try { realtimeEncoder.start(audioOutPath, codec); } catch (Exception e) {
+          Log.e(LOG_TAG, "Encoder start failed: " + e.getMessage());
+        }
         Recognize.reset();
         cachedConfirmedText = new StringBuilder();
         cachedInProgressSentence = new StringBuilder();
@@ -721,7 +717,7 @@ public class MainActivity extends AppCompatActivity {
           }
         }
         if (AudioRecord.ERROR_INVALID_OPERATION != read && read > 0) {
-          feedToRealtimeEncoder(buffer, read);
+          realtimeEncoder.feed(buffer, read);
           try {
             short[] copy = new short[read];
             System.arraycopy(buffer, 0, copy, 0, read);
@@ -755,7 +751,7 @@ public class MainActivity extends AppCompatActivity {
         ((VoiceRectView) findViewById(R.id.voiceRectView)).zero();
       }
       ((VadProbView) findViewById(R.id.vadProbView)).zero();
-      finalizeRealtimeEncoder();
+      realtimeEncoder.release();
     }).start();
   }
 
@@ -926,137 +922,6 @@ public class MainActivity extends AppCompatActivity {
         }
       }
     }).start();
-  }
-
-  private void startRealtimeEncoder(String outputPath, String codec) {
-    try {
-      String mime;
-      int bitrate;
-      int muxerFormat;
-      if ("aac".equals(codec) || "aac_hw".equals(codec)) {
-        mime = "audio/mp4a-latm"; bitrate = 16000;
-        muxerFormat = android.media.MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4;
-      } else if ("amrnb".equals(codec)) {
-        mime = "audio/3gpp"; bitrate = 12200;
-        muxerFormat = android.media.MediaMuxer.OutputFormat.MUXER_OUTPUT_3GPP;
-      } else {
-        mime = "audio/opus"; bitrate = 6000;
-        muxerFormat = android.media.MediaMuxer.OutputFormat.MUXER_OUTPUT_OGG;
-      }
-      android.media.MediaFormat fmt = android.media.MediaFormat.createAudioFormat(mime, SAMPLE_RATE, 1);
-      fmt.setInteger(android.media.MediaFormat.KEY_BIT_RATE, bitrate);
-      if ("aac".equals(codec) || "aac_hw".equals(codec)) {
-        fmt.setInteger(android.media.MediaFormat.KEY_AAC_PROFILE,
-            android.media.MediaCodecInfo.CodecProfileLevel.AACObjectLC);
-      }
-      if ("aac_hw".equals(codec)) {
-        try {
-          realtimeEncoder = android.media.MediaCodec.createByCodecName("c2.sec.aac.encoder");
-        } catch (Exception e) {
-          Log.w(LOG_TAG, "HW AAC encoder not found, falling back to SW");
-          realtimeEncoder = android.media.MediaCodec.createEncoderByType(mime);
-        }
-      } else {
-        realtimeEncoder = android.media.MediaCodec.createEncoderByType(mime);
-      }
-      realtimeEncoder.configure(fmt, null, null, android.media.MediaCodec.CONFIGURE_FLAG_ENCODE);
-      realtimeEncoder.start();
-      realtimeMuxer = new android.media.MediaMuxer(outputPath, muxerFormat);
-      realtimeMuxerTrack = -1;
-      realtimeMuxerStarted = false;
-      realtimePresentationUs = 0;
-      encoderAccumBuf = new short[OPUS_FRAME_SAMPLES];
-      encoderAccumFilled = 0;
-      Log.i(LOG_TAG, "Realtime Opus encoder started: " + outputPath);
-    } catch (Exception e) {
-      Log.e(LOG_TAG, "Failed to start realtime encoder: " + e.getMessage());
-      realtimeEncoder = null;
-      realtimeMuxer = null;
-    }
-  }
-
-  private void feedToRealtimeEncoder(short[] samples, int count) {
-    if (realtimeEncoder == null) return;
-    int srcPos = 0;
-    while (srcPos < count) {
-      int toCopy = Math.min(count - srcPos, OPUS_FRAME_SAMPLES - encoderAccumFilled);
-      System.arraycopy(samples, srcPos, encoderAccumBuf, encoderAccumFilled, toCopy);
-      srcPos += toCopy;
-      encoderAccumFilled += toCopy;
-      if (encoderAccumFilled == OPUS_FRAME_SAMPLES) {
-        submitFrame(encoderAccumBuf, OPUS_FRAME_SAMPLES, false);
-        encoderAccumFilled = 0;
-      }
-    }
-    drainEncoder(0); // non-blocking drain
-  }
-
-  private void submitFrame(short[] samples, int count, boolean eos) {
-    try {
-      int inIdx = realtimeEncoder.dequeueInputBuffer(5000);
-      if (inIdx >= 0) {
-        java.nio.ByteBuffer inBuf = realtimeEncoder.getInputBuffer(inIdx);
-        inBuf.clear();
-        byte[] bytes = new byte[count * 2];
-        java.nio.ByteBuffer.wrap(bytes).order(java.nio.ByteOrder.LITTLE_ENDIAN).asShortBuffer().put(samples, 0, count);
-        inBuf.put(bytes, 0, count * 2);
-        int flags = eos ? android.media.MediaCodec.BUFFER_FLAG_END_OF_STREAM : 0;
-        realtimeEncoder.queueInputBuffer(inIdx, 0, count * 2, realtimePresentationUs, flags);
-        realtimePresentationUs += count * 1_000_000L / SAMPLE_RATE;
-      }
-    } catch (Exception e) {
-      Log.e(LOG_TAG, "Encoder input error: " + e.getMessage());
-    }
-  }
-
-  private void drainEncoder(long timeoutUs) {
-    if (realtimeEncoder == null || realtimeMuxer == null) return;
-    android.media.MediaCodec.BufferInfo info = new android.media.MediaCodec.BufferInfo();
-    while (true) {
-      int outIdx = realtimeEncoder.dequeueOutputBuffer(info, timeoutUs);
-      if (outIdx == android.media.MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
-        realtimeMuxerTrack = realtimeMuxer.addTrack(realtimeEncoder.getOutputFormat());
-        realtimeMuxer.start();
-        realtimeMuxerStarted = true;
-      } else if (outIdx >= 0) {
-        if (realtimeMuxerStarted && info.size > 0) {
-          java.nio.ByteBuffer outBuf = realtimeEncoder.getOutputBuffer(outIdx);
-          outBuf.position(info.offset);
-          outBuf.limit(info.offset + info.size);
-          realtimeMuxer.writeSampleData(realtimeMuxerTrack, outBuf, info);
-        }
-        realtimeEncoder.releaseOutputBuffer(outIdx, false);
-        if ((info.flags & android.media.MediaCodec.BUFFER_FLAG_END_OF_STREAM) != 0) break;
-      } else {
-        break;
-      }
-    }
-  }
-
-  private void finalizeRealtimeEncoder() {
-    if (realtimeEncoder == null) return;
-    try {
-      // Submit remaining samples + EOS
-      if (encoderAccumFilled > 0) {
-        java.util.Arrays.fill(encoderAccumBuf, encoderAccumFilled, OPUS_FRAME_SAMPLES, (short) 0);
-        submitFrame(encoderAccumBuf, OPUS_FRAME_SAMPLES, true);
-      } else {
-        int inIdx = realtimeEncoder.dequeueInputBuffer(5000);
-        if (inIdx >= 0) {
-          realtimeEncoder.queueInputBuffer(inIdx, 0, 0, realtimePresentationUs,
-              android.media.MediaCodec.BUFFER_FLAG_END_OF_STREAM);
-        }
-      }
-      drainEncoder(5000); // blocking drain until EOS
-      Log.i(LOG_TAG, "Realtime Opus encoder finalized");
-    } catch (Exception e) {
-      Log.e(LOG_TAG, "Error finalizing encoder: " + e.getMessage());
-    } finally {
-      try { realtimeEncoder.stop(); realtimeEncoder.release(); } catch (Exception ignored) {}
-      try { realtimeMuxer.stop(); realtimeMuxer.release(); } catch (Exception ignored) {}
-      realtimeEncoder = null;
-      realtimeMuxer = null;
-    }
   }
 
   private void compressToAac(String recordingName) {

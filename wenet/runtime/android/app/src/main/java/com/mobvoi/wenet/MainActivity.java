@@ -165,25 +165,8 @@ public class MainActivity extends AppCompatActivity {
   private final PlaybackController playbackController = new PlaybackController();
 
   // Karaoke
-  private List<WordSpan> wordSpans = null;
+  private final KaraokeController karaokeController = new KaraokeController();
   private String currentPlaybackRecording = null;
-  private SpannableStringBuilder karaokeSSB = null;
-  private int[] karaokeSpanStarts = null;
-  private int[] karaokeSpanEnds = null;
-  private int lastHighlightIndex = -1;
-  private BackgroundColorSpan currentBgSpan = null;
-  private ForegroundColorSpan currentFgSpan = null;
-
-  private static class WordSpan {
-    String word;
-    int startMs;
-    int endMs;
-    WordSpan(String word, int startMs, int endMs) {
-      this.word = word;
-      this.startMs = startMs;
-      this.endMs = endMs;
-    }
-  }
 
   public static void assetsInit(Context context) throws IOException {
     AssetManager assetMgr = context.getAssets();
@@ -267,7 +250,7 @@ public class MainActivity extends AppCompatActivity {
           case android.view.MotionEvent.ACTION_MOVE:
             if (Math.abs(event.getX()-tapStartX)>8 || Math.abs(event.getY()-tapStartY)>8) moved=true; break;
           case android.view.MotionEvent.ACTION_UP:
-            if (!moved && karaokeSpanStarts != null && wordSpans != null) {
+            if (!moved && karaokeController.getWordSpans() != null) {
               TextView tv = (TextView) v;
               android.text.Layout layout = tv.getLayout();
               if (layout != null) {
@@ -275,9 +258,10 @@ public class MainActivity extends AppCompatActivity {
                 int y = (int)(event.getY()-tv.getTotalPaddingTop()+tv.getScrollY());
                 int line = layout.getLineForVertical(y);
                 int offset = layout.getOffsetForHorizontal(line, x);
-                int idx = findWordAtCharOffset(offset);
-                if (idx >= 0 && wordSpans != null && idx < wordSpans.size()) {
-                  seekToMs(wordSpans.get(idx).startMs);
+                int idx = karaokeController.findWordAtCharOffset(offset);
+                List<KaraokeController.WordSpan> spans = karaokeController.getWordSpans();
+                if (idx >= 0 && spans != null && idx < spans.size()) {
+                  seekToMs(spans.get(idx).startMs);
                   if (!playbackController.isPlaying()) resumePlayback();
                 }
               }
@@ -885,7 +869,7 @@ public class MainActivity extends AppCompatActivity {
           saveTimedResult();
           // Build timestamped text for copy & Slack
           try {
-            timestampedResult = buildTimestampedText(Recognize.getTimedResult());
+            timestampedResult = KaraokeController.buildTimestampedTextFromJson(Recognize.getTimedResult());
           } catch (Exception e) {
             timestampedResult = Recognize.getResult();
           }
@@ -1296,75 +1280,6 @@ public class MainActivity extends AppCompatActivity {
     }
   }
 
-  private String buildTimestampedText(String timedJson) {
-    try {
-      JSONArray arr = new JSONArray(timedJson);
-      if (arr.length() == 0) return "";
-      StringBuilder result = new StringBuilder();
-      StringBuilder sentence = new StringBuilder();
-      int sentenceStartMs = -1;
-      for (int i = 0; i < arr.length(); i++) {
-        JSONObject obj = arr.getJSONObject(i);
-        String w = obj.getString("w");
-        int startMs = obj.getInt("s");
-        // Newline marker = endpoint boundary
-        if ("\n".equals(w)) {
-          if (sentence.toString().trim().length() > 0) {
-            result.append("[").append(formatTimeMs(sentenceStartMs)).append("] ")
-                .append(sentence.toString().trim()).append("\n");
-            sentence = new StringBuilder();
-            sentenceStartMs = -1;
-          }
-          continue;
-        }
-        if (sentenceStartMs == -1) sentenceStartMs = startMs;
-        if ("\u2581".equals(w)) {
-          sentence.append(" ");
-        } else {
-          sentence.append(w);
-        }
-      }
-      if (sentence.toString().trim().length() > 0) {
-        result.append("[").append(formatTimeMs(sentenceStartMs)).append("] ")
-            .append(sentence.toString().trim()).append("\n");
-      }
-      return result.toString().trim();
-    } catch (Exception e) {
-      Log.e(LOG_TAG, "Error building timestamped text: " + e.getMessage());
-      return "";
-    }
-  }
-
-  private String buildTimestampedTextFromSpans(List<WordSpan> spans) {
-    if (spans == null || spans.isEmpty()) return "";
-    StringBuilder result = new StringBuilder();
-    StringBuilder sentence = new StringBuilder();
-    int sentenceStartMs = -1;
-    for (WordSpan ws : spans) {
-      // Newline marker = endpoint boundary
-      if ("\n".equals(ws.word)) {
-        if (sentence.toString().trim().length() > 0) {
-          result.append("[").append(formatTimeMs(sentenceStartMs)).append("] ")
-              .append(sentence.toString().trim()).append("\n");
-          sentence = new StringBuilder();
-          sentenceStartMs = -1;
-        }
-        continue;
-      }
-      if (sentenceStartMs == -1) sentenceStartMs = ws.startMs;
-      if ("\u2581".equals(ws.word)) {
-        sentence.append(" ");
-      } else {
-        sentence.append(ws.word);
-      }
-    }
-    if (sentence.toString().trim().length() > 0) {
-      result.append("[").append(formatTimeMs(sentenceStartMs)).append("] ")
-          .append(sentence.toString().trim()).append("\n");
-    }
-    return result.toString().trim();
-  }
-
   // --- Playback ---
 
   private void enterPlaybackMode(String recordingName) {
@@ -1406,8 +1321,8 @@ public class MainActivity extends AppCompatActivity {
   private void enterPlaybackModeWithOgg(String recordingName, String opusPath, long durationMs) {
     int durMs = (int) Math.min(durationMs, Integer.MAX_VALUE);
 
-    wordSpans = loadWordSpans(recordingName);
-    timestampedResult = buildTimestampedTextFromSpans(wordSpans);
+    karaokeController.load(this, recordingName);
+    timestampedResult = karaokeController.buildTimestampedText();
 
     LinearLayout playbackLayout = findViewById(R.id.playbackLayout);
     playbackLayout.setVisibility(View.VISIBLE);
@@ -1586,41 +1501,6 @@ public class MainActivity extends AppCompatActivity {
     }
   }
 
-  private List<WordSpan> loadWordSpans(String recordingName) {
-    List<WordSpan> spans = new ArrayList<>();
-    try {
-      String resultPath = RecordingManager.getResultPath(this, recordingName);
-      File f = new File(resultPath);
-      if (!f.exists()) return spans;
-      FileInputStream fis = new FileInputStream(f);
-      byte[] data = new byte[(int) f.length()];
-      fis.read(data);
-      fis.close();
-      JSONArray arr = new JSONArray(new String(data, "UTF-8"));
-      int lastEndMs = 0;
-      for (int i = 0; i < arr.length(); i++) {
-        JSONObject obj = arr.getJSONObject(i);
-        String word = obj.getString("w");
-        int start = obj.getInt("s");
-        int end = obj.getInt("e");
-        
-        // Fix for tokens with 0 timestamps (like \n) breaking binary search sorting
-        if (start == 0 && end == 0 && i > 0) {
-            start = lastEndMs;
-            end = lastEndMs;
-        }
-        
-        spans.add(new WordSpan(word, start, end));
-        if (end > lastEndMs) {
-            lastEndMs = end;
-        }
-      }
-    } catch (Exception e) {
-      Log.e(LOG_TAG, "Error loading word spans: " + e.getMessage());
-    }
-    return spans;
-  }
-
   private void resumePlayback() {
     if (!playbackController.isReady()) return;
 
@@ -1703,162 +1583,19 @@ public class MainActivity extends AppCompatActivity {
   }
 
   private String formatTimeMs(int ms) {
-    int totalSec = ms / 1000;
-    int h = totalSec / 3600;
-    int m = (totalSec % 3600) / 60;
-    int s = totalSec % 60;
-    return String.format("%02d:%02d:%02d", h, m, s);
+    return KaraokeController.formatTimeMs(ms);
   }
 
   // --- Karaoke ---
 
-  /** Build the SpannableStringBuilder in timestamped format with ClickableSpans. */
   private void buildKaraokeText() {
-    if (wordSpans == null || wordSpans.isEmpty()) return;
-
-    karaokeSSB = new SpannableStringBuilder();
-    karaokeSpanStarts = new int[wordSpans.size()];
-    karaokeSpanEnds = new int[wordSpans.size()];
-    lastHighlightIndex = -1;
-    currentBgSpan = null;
-    currentFgSpan = null;
-
-    // Group words into segments by endpoint boundary markers
-    int sentenceStartMs = -1;
-    boolean needNewLine = false;
-    for (int i = 0; i < wordSpans.size(); i++) {
-      WordSpan ws = wordSpans.get(i);
-
-      // Newline marker = endpoint boundary
-      if ("\n".equals(ws.word)) {
-        if (sentenceStartMs != -1) {
-          sentenceStartMs = -1;
-          needNewLine = true;
-        }
-        karaokeSpanStarts[i] = karaokeSSB.length();
-        karaokeSpanEnds[i] = karaokeSSB.length();
-        continue;
-      }
-
-      // Start of a new segment: insert timestamp prefix
-      if (sentenceStartMs == -1) {
-        if (needNewLine) karaokeSSB.append("\n");
-        sentenceStartMs = ws.startMs;
-        karaokeSSB.append("[").append(formatTimeMs(sentenceStartMs)).append("] ");
-      }
-
-      // Skip space token but add a space character
-      if ("\u2581".equals(ws.word)) {
-        karaokeSpanStarts[i] = karaokeSSB.length();
-        karaokeSSB.append(" ");
-        karaokeSpanEnds[i] = karaokeSSB.length();
-      } else {
-        karaokeSpanStarts[i] = karaokeSSB.length();
-        karaokeSSB.append(ws.word);
-        karaokeSpanEnds[i] = karaokeSSB.length();
-      }
-    }
-
-    TextView textView = findViewById(R.id.textView);
-    textView.setText(karaokeSSB, TextView.BufferType.SPANNABLE);
+    karaokeController.buildText((TextView) findViewById(R.id.textView));
   }
 
-  /** Update only the highlight span (called every 50ms). Modifies Spannable in-place, no setText(). */
   private void updateKaraokeHighlight(int currentMs) {
-    if (wordSpans == null || wordSpans.isEmpty()) return;
-    TextView textView = findViewById(R.id.textView);
-    CharSequence cs = textView.getText();
-    if (!(cs instanceof android.text.Spannable)) return;
-    android.text.Spannable spannable = (android.text.Spannable) cs;
-
-    // Binary search: find word where startMs <= currentMs < endMs
-    int currentIndex = -1;
-    int lo = 0, hi = wordSpans.size() - 1;
-    while (lo <= hi) {
-      int mid = (lo + hi) / 2;
-      WordSpan ws = wordSpans.get(mid);
-      if (currentMs < ws.startMs) { hi = mid - 1; }
-      else if (currentMs >= ws.endMs) { lo = mid + 1; }
-      else { currentIndex = mid; break; }
-    }
-    // Fallback: last word with startMs <= currentMs
-    if (currentIndex == -1 && currentMs > 0) {
-      lo = 0; hi = wordSpans.size() - 1;
-      while (lo <= hi) {
-        int mid = (lo + hi) / 2;
-        if (wordSpans.get(mid).startMs <= currentMs) { currentIndex = mid; lo = mid + 1; }
-        else { hi = mid - 1; }
-      }
-    }
-
-    // Skip if same word is already highlighted
-    if (currentIndex == lastHighlightIndex) return;
-
-    // Fix: if current index is a special token with no length (like \n) or just a space,
-    // find the previous visible word so highlighting doesn't disappear.
-    if (currentIndex >= 0) {
-      int originalIndex = currentIndex;
-      while (currentIndex >= 0 &&
-          (karaokeSpanEnds[currentIndex] - karaokeSpanStarts[currentIndex] <= 0
-           || "\u2581".equals(wordSpans.get(currentIndex).word))) {
-        currentIndex--;
-      }
-      // If we went too far back, revert to the found index (could be -1 if no visible word before)
-      if (currentIndex < 0 && originalIndex >= 0) {
-          // If no previous visible word, stay at -1 (no highlight) or try to find first visible word after
-          currentIndex = -1;
-      }
-    }
-
-    // Skip again after potential index adjustment
-    if (currentIndex == lastHighlightIndex) return;
-    if (currentBgSpan != null) {
-      spannable.removeSpan(currentBgSpan);
-    }
-    if (currentFgSpan != null) {
-      spannable.removeSpan(currentFgSpan);
-    }
-
-    // Apply new highlight directly on the Spannable (no setText needed)
-    if (currentIndex >= 0) {
-      currentBgSpan = new BackgroundColorSpan(Color.parseColor("#FFFF00"));
-      currentFgSpan = new ForegroundColorSpan(Color.BLACK);
-      spannable.setSpan(currentBgSpan,
-          karaokeSpanStarts[currentIndex], karaokeSpanEnds[currentIndex],
-          Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
-      spannable.setSpan(currentFgSpan,
-          karaokeSpanStarts[currentIndex], karaokeSpanEnds[currentIndex],
-          Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
-    } else {
-      currentBgSpan = null;
-      currentFgSpan = null;
-    }
-
-    lastHighlightIndex = currentIndex;
-
-    // Auto-scroll text to show highlighted word
-    if (currentIndex >= 0) {
-      ScrollView scrollView = findViewById(R.id.scrollView);
-      int line = textView.getLayout() != null
-          ? textView.getLayout().getLineForOffset(karaokeSpanStarts[currentIndex]) : 0;
-      int y = textView.getLayout() != null
-          ? textView.getLayout().getLineTop(line) : 0;
-      int scrollViewHeight = scrollView.getHeight();
-      scrollView.smoothScrollTo(0, Math.max(0, y - scrollViewHeight / 3));
-    }
-  }
-
-  /** Binary search: find word index whose span contains the given character offset. */
-  private int findWordAtCharOffset(int offset) {
-    if (karaokeSpanStarts == null || karaokeSpanEnds == null) return -1;
-    int lo = 0, hi = karaokeSpanStarts.length - 1;
-    while (lo <= hi) {
-      int mid = (lo + hi) / 2;
-      if (karaokeSpanEnds[mid] <= offset) { lo = mid + 1; }
-      else if (karaokeSpanStarts[mid] > offset) { hi = mid - 1; }
-      else { return mid; }
-    }
-    return -1;
+    karaokeController.updateHighlight(currentMs,
+        (TextView) findViewById(R.id.textView),
+        (ScrollView) findViewById(R.id.scrollView));
   }
 
   // --- Recordings Dialog ---

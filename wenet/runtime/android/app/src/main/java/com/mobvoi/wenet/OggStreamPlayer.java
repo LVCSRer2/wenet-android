@@ -195,8 +195,9 @@ public class OggStreamPlayer {
     }
     pcmQueue.clear();
     playbackStartMs = fromMs;
-    extractor.seekTo(fromMs * 1000L, MediaExtractor.SEEK_TO_CLOSEST_SYNC);
-    decoder.flush();
+    // Delegate seek+flush to the decoder thread via seekTargetUs — avoids calling
+    // decoder.flush() from the main thread while the decoder thread may be in queueInputBuffer.
+    seekTargetUs = fromMs * 1000L;
     if (audioTrack != null) {
       audioTrack.play();
       trackStartFrames = audioTrack.getPlaybackHeadPosition() & 0xFFFFFFFFL;

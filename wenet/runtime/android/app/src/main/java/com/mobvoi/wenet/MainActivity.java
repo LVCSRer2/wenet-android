@@ -161,19 +161,8 @@ public class MainActivity extends AppCompatActivity {
   // Realtime encoder
   private RealtimeEncoder realtimeEncoder = new RealtimeEncoder();
 
-  // Playback (OGG streaming)
-  private OggStreamPlayer oggPlayer = null;
-  private String playbackAudioPath = null; // OGG path
-  private long playbackDurationMs = 0;
-  private boolean isPlaying = false;
-  private volatile long playbackPositionMs = 0;
-  private boolean userSeekingBar = false;
-  private final Handler uiHandler = new Handler(Looper.getMainLooper());
-  private Runnable playbackUpdater;
-  // Legacy fields kept for AudioTrack/PCM compat (used only in update helpers)
-  private AudioTrack audioTrack = null;
-  private long playbackStartBytes = 0;
-  private long pcmFileLength = 0;
+  // Playback
+  private final PlaybackController playbackController = new PlaybackController();
 
   // Karaoke
   private List<WordSpan> wordSpans = null;
@@ -289,7 +278,7 @@ public class MainActivity extends AppCompatActivity {
                 int idx = findWordAtCharOffset(offset);
                 if (idx >= 0 && wordSpans != null && idx < wordSpans.size()) {
                   seekToMs(wordSpans.get(idx).startMs);
-                  if (!isPlaying) resumePlayback();
+                  if (!playbackController.isPlaying()) resumePlayback();
                 }
               }
             }
@@ -398,7 +387,7 @@ public class MainActivity extends AppCompatActivity {
     // Play/Pause button
     Button playPauseButton = findViewById(R.id.playPauseButton);
     playPauseButton.setOnClickListener(v -> {
-      if (isPlaying) {
+      if (playbackController.isPlaying()) {
         pausePlayback();
       } else {
         resumePlayback();
@@ -410,18 +399,18 @@ public class MainActivity extends AppCompatActivity {
     seekBar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
       @Override
       public void onProgressChanged(SeekBar sb, int progress, boolean fromUser) {
-        if (fromUser && playbackAudioPath != null) {
+        if (fromUser && playbackController.isReady()) {
           updatePlaybackUI(progress);
           updateKaraokeHighlight(progress);
           updateVisualizationCursor(progress);
         }
       }
       @Override
-      public void onStartTrackingTouch(SeekBar sb) { userSeekingBar = true; }
+      public void onStartTrackingTouch(SeekBar sb) { playbackController.setUserSeeking(true); }
       @Override
       public void onStopTrackingTouch(SeekBar sb) {
-        userSeekingBar = false;
-        if (playbackAudioPath != null) {
+        playbackController.setUserSeeking(false);
+        if (playbackController.isReady()) {
           seekToMs(sb.getProgress());
         }
       }
@@ -1382,55 +1371,36 @@ public class MainActivity extends AppCompatActivity {
     currentPlaybackRecording = recordingName;
     if (getSupportActionBar() != null) getSupportActionBar().setTitle(recordingName);
 
-    String opusPath = RecordingManager.findAudioPath(this, recordingName);
-    if (opusPath == null) {
+    String audioPath = RecordingManager.findAudioPath(this, recordingName);
+    if (audioPath == null) {
       Toast.makeText(this, "Audio file not found", Toast.LENGTH_SHORT).show();
       return;
     }
 
-    // prepare() initialises MediaExtractor + MediaCodec — must run off main thread
-    new Thread(() -> {
-      OggStreamPlayer player = new OggStreamPlayer(opusPath);
-      if (!player.prepare()) {
-        runOnUiThread(() -> Toast.makeText(this, "오디오 열기 실패", Toast.LENGTH_SHORT).show());
-        return;
+    playbackController.prepare(audioPath, new PlaybackController.Listener() {
+      @Override public void onReady(long durationMs) {
+        enterPlaybackModeWithOgg(recordingName, audioPath, durationMs);
       }
-      long durationMs = player.getTotalDurationMs();
-      runOnUiThread(() -> {
-        if (oggPlayer != null) { oggPlayer.release(); }
-        oggPlayer = player;
-        playbackAudioPath = opusPath;
-        playbackDurationMs = durationMs;
-        pcmFileLength = durationMs * SAMPLE_RATE * 2 / 1000;
-
-        oggPlayer.setListener(new OggStreamPlayer.Listener() {
-          @Override public void onPositionMs(int ms) {
-            if (!userSeekingBar && isPlaying) {
-              playbackPositionMs = ms;
-              updatePlaybackUI(ms);
-              updateKaraokeHighlight(ms);
-              updateVisualizationCursor(ms);
-            }
-          }
-          @Override public void onPlaybackComplete() {
-            isPlaying = false;
-            playbackPositionMs = 0;
-            Button ppBtn = findViewById(R.id.playPauseButton);
-            ppBtn.setText("Play");
-            updatePlaybackUI(0);
-            updateKaraokeHighlight(0);
-            if (useSpectrogram) {
-              ((SpectrogramView) findViewById(R.id.spectrogramView)).setCursorPosition(0f);
-            } else {
-              ((VoiceRectView) findViewById(R.id.voiceRectView)).setCursorPosition(0f);
-            }
-            ((VadProbView) findViewById(R.id.vadProbView)).setCursorPosition(0f);
-          }
-        });
-
-        enterPlaybackModeWithOgg(recordingName, opusPath, durationMs);
-      });
-    }).start();
+      @Override public void onPositionMs(int ms) {
+        updatePlaybackUI(ms);
+        updateKaraokeHighlight(ms);
+        updateVisualizationCursor(ms);
+      }
+      @Override public void onPlaybackComplete() {
+        ((Button) findViewById(R.id.playPauseButton)).setText("Play");
+        updatePlaybackUI(0);
+        updateKaraokeHighlight(0);
+        if (useSpectrogram) {
+          ((SpectrogramView) findViewById(R.id.spectrogramView)).setCursorPosition(0f);
+        } else {
+          ((VoiceRectView) findViewById(R.id.voiceRectView)).setCursorPosition(0f);
+        }
+        ((VadProbView) findViewById(R.id.vadProbView)).setCursorPosition(0f);
+      }
+      @Override public void onError(String msg) {
+        Toast.makeText(MainActivity.this, msg, Toast.LENGTH_SHORT).show();
+      }
+    });
   }
 
   private void enterPlaybackModeWithOgg(String recordingName, String opusPath, long durationMs) {
@@ -1451,9 +1421,6 @@ public class MainActivity extends AppCompatActivity {
 
     Button playPauseButton = findViewById(R.id.playPauseButton);
     playPauseButton.setText("Play");
-
-    playbackPositionMs = 0;
-    isPlaying = false;
 
     buildKaraokeText();
     updateKaraokeHighlight(0);
@@ -1655,7 +1622,7 @@ public class MainActivity extends AppCompatActivity {
   }
 
   private void resumePlayback() {
-    if (playbackAudioPath == null || oggPlayer == null) return;
+    if (!playbackController.isReady()) return;
 
     if (startRecord) {
       startRecord = false;
@@ -1689,61 +1656,27 @@ public class MainActivity extends AppCompatActivity {
       audioManager.requestAudioFocus(null, AudioManager.STREAM_MUSIC, AudioManager.AUDIOFOCUS_GAIN);
     }
 
-    isPlaying = true;
-    Button playPauseButton = findViewById(R.id.playPauseButton);
-    playPauseButton.setText("Pause");
-
-    oggPlayer.resume(playbackPositionMs);
+    ((Button) findViewById(R.id.playPauseButton)).setText("Pause");
+    playbackController.resume();
   }
 
   private void pausePlayback() {
-    if (oggPlayer != null) {
-      playbackPositionMs = oggPlayer.pause();
-    }
-    isPlaying = false;
-    Button playPauseButton = findViewById(R.id.playPauseButton);
-    playPauseButton.setText("Play");
-    stopPlaybackUpdater();
+    playbackController.pause();
+    ((Button) findViewById(R.id.playPauseButton)).setText("Play");
   }
 
   private void stopPlayback() {
-    isPlaying = false;
-    stopPlaybackUpdater();
-    if (oggPlayer != null) {
-      oggPlayer.release();
-      oggPlayer = null;
-    }
-    playbackPositionMs = 0;
-    playbackAudioPath = null;
-    playbackDurationMs = 0;
-    pcmFileLength = 0;
+    playbackController.release();
     ((VoiceRectView) findViewById(R.id.voiceRectView)).clearPlaybackMode();
     ((SpectrogramView) findViewById(R.id.spectrogramView)).clearPlaybackMode();
     ((VadProbView) findViewById(R.id.vadProbView)).clearPlaybackMode();
   }
 
   private void seekToMs(int ms) {
-    if (ms < 0) ms = 0;
-    if (ms > playbackDurationMs) ms = (int) playbackDurationMs;
-    boolean wasPlaying = isPlaying;
-    if (wasPlaying) pausePlayback();
-    playbackPositionMs = ms;
+    playbackController.seekTo(ms);
     updatePlaybackUI(ms);
     updateKaraokeHighlight(ms);
     updateVisualizationCursor(ms);
-    if (wasPlaying) resumePlayback();
-  }
-
-  private void startPlaybackUpdater() {
-    // OGG player calls onPositionMs directly; this updater is kept for seekBar drag-only updates
-    stopPlaybackUpdater();
-  }
-
-  private void stopPlaybackUpdater() {
-    if (playbackUpdater != null) {
-      uiHandler.removeCallbacks(playbackUpdater);
-      playbackUpdater = null;
-    }
   }
 
   private void updateVisualizationCursor(int currentMs) {
@@ -1760,7 +1693,7 @@ public class MainActivity extends AppCompatActivity {
   private void updatePlaybackUI(int currentMs) {
     SeekBar seekBar = findViewById(R.id.seekBar);
     TextView timeText = findViewById(R.id.timeTextView);
-    int durationMs = (int) playbackDurationMs;
+    int durationMs = (int) playbackController.getDurationMs();
     seekBar.setProgress(currentMs);
     timeText.setText(formatTimeMs(currentMs) + "/" + formatTimeMs(durationMs));
   }

@@ -43,6 +43,7 @@ public class OggStreamPlayer {
   private volatile boolean active = false;
   private volatile boolean paused = false;
   private volatile long seekTargetUs = -1;
+  private volatile boolean needsReinit = false; // true after natural EOF — recreate extractor/decoder on next start()
 
   // Position tracking
   private volatile long playbackStartMs = 0;
@@ -125,10 +126,43 @@ public class OggStreamPlayer {
     paused = false;
     playbackStartMs = startMs;
 
-    if (startMs > 0) {
-      extractor.seekTo(startMs * 1000L, MediaExtractor.SEEK_TO_CLOSEST_SYNC);
+    pcmQueue.clear();
+
+    if (needsReinit) {
+      needsReinit = false;
+      // Release stale extractor/decoder and recreate
+      try { decoder.stop(); decoder.release(); } catch (Exception ignored) {}
+      try { extractor.release(); } catch (Exception ignored) {}
+      try {
+        extractor = new MediaExtractor();
+        extractor.setDataSource(opusPath);
+        int trackIndex = -1;
+        for (int i = 0; i < extractor.getTrackCount(); i++) {
+          MediaFormat fmt = extractor.getTrackFormat(i);
+          String mime = fmt.getString(MediaFormat.KEY_MIME);
+          if (mime != null && mime.startsWith("audio/")) { trackIndex = i; break; }
+        }
+        if (trackIndex >= 0) {
+          extractor.selectTrack(trackIndex);
+          MediaFormat fmt = extractor.getTrackFormat(trackIndex);
+          String mime = fmt.getString(MediaFormat.KEY_MIME);
+          decoder = MediaCodec.createDecoderByType(mime);
+          decoder.configure(fmt, null, null, 0);
+          decoder.start();
+        }
+      } catch (IOException e) {
+        Log.e(TAG, "reinit failed: " + e.getMessage());
+        active = false;
+        return;
+      }
     }
 
+    extractor.seekTo(startMs * 1000L, MediaExtractor.SEEK_TO_CLOSEST_SYNC);
+    try { decoder.flush(); } catch (Exception ignored) {}
+
+    if (audioTrack != null) {
+      try { audioTrack.pause(); audioTrack.flush(); } catch (Exception ignored) {}
+    }
     audioTrack.play();
     trackStartFrames = audioTrack.getPlaybackHeadPosition() & 0xFFFFFFFFL;
 
@@ -309,12 +343,12 @@ public class OggStreamPlayer {
       }
 
       if (chunk == EOF_SENTINEL) {
-        // Playback complete
-        if (active) {
-          runOnMainThread(() -> {
-            if (listener != null) listener.onPlaybackComplete();
-          });
-        }
+        // Playback complete — reset active so resume() can restart via start()
+        needsReinit = true;
+        active = false;
+        runOnMainThread(() -> {
+          if (listener != null) listener.onPlaybackComplete();
+        });
         break;
       }
 

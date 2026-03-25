@@ -1653,8 +1653,8 @@ public class MainActivity extends AppCompatActivity {
 
         String escaped = text.replace("\\", "\\\\").replace("\"", "\\\"")
             .replace("\n", "\\n").replace("\r", "");
-        String body = "{\"model\":\"gpt-4o-mini\",\"messages\":["
-            + "{\"role\":\"system\",\"content\":\"다음 음성 인식 텍스트를 핵심 내용 위주로 한국어로 간결하게 요약해주세요.\"},"
+        String body = "{\"model\":\"gpt-5.4-nano\",\"messages\":["
+            + "{\"role\":\"system\",\"content\":\"다음은 타임스탬프([HH:MM:SS])가 포함된 음성 인식 텍스트입니다. 시간 흐름에 따라 주요 내용을 단계별로 요약해주세요. 각 항목은 '[HH:MM:SS] 내용' 형식으로 작성하고, 한국어로 간결하게 표현해주세요.\"},"
             + "{\"role\":\"user\",\"content\":\"" + escaped + "\"}]}";
 
         byte[] bodyBytes = body.getBytes("UTF-8");

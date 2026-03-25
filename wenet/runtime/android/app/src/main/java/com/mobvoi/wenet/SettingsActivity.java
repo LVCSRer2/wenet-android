@@ -16,6 +16,7 @@ public class SettingsActivity extends AppCompatActivity {
 
     private static final String PREFS_NAME = "wenet_settings";
     private static final String KEY_WEBHOOK_URL = "slack_webhook_url";
+    private static final String KEY_OPENAI_API_KEY = "openai_api_key";
     private static final String KEY_MODEL_TYPE = "model_type";
     private static final String KEY_VIZ_TYPE = "viz_type";
     private static final String KEY_AEC = "audio_aec";
@@ -34,6 +35,10 @@ public class SettingsActivity extends AppCompatActivity {
         setContentView(R.layout.activity_settings);
 
         SharedPreferences prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE);
+
+        // OpenAI API Key
+        EditText openaiApiKeyEditText = findViewById(R.id.openaiApiKeyEditText);
+        openaiApiKeyEditText.setText(prefs.getString(KEY_OPENAI_API_KEY, ""));
 
         // Webhook URL
         EditText urlEditText = findViewById(R.id.webhookUrlEditText);
@@ -157,6 +162,9 @@ public class SettingsActivity extends AppCompatActivity {
 
         Button saveButton = findViewById(R.id.saveButton);
         saveButton.setOnClickListener(v -> {
+            String openaiKey = openaiApiKeyEditText.getText().toString().trim();
+            prefs.edit().putString(KEY_OPENAI_API_KEY, openaiKey).apply();
+
             String url = urlEditText.getText().toString().trim();
             prefs.edit().putString(KEY_WEBHOOK_URL, url).apply();
 

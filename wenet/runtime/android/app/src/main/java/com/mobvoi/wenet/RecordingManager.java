@@ -59,6 +59,10 @@ public class RecordingManager {
     return new File(new File(getRecordingsRoot(context), name), "result.json").getAbsolutePath();
   }
 
+  public static String getSummaryPath(Context context, String name) {
+    return new File(new File(getRecordingsRoot(context), name), "summary.txt").getAbsolutePath();
+  }
+
   public static String getOpusPath(Context context, String name) {
     return new File(new File(getRecordingsRoot(context), name), "audio.ogg").getAbsolutePath();
   }

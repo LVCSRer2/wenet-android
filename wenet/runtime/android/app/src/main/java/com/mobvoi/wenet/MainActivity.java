@@ -148,6 +148,7 @@ public class MainActivity extends AppCompatActivity {
 
   // Recording save
   private String timestampedResult = null;
+  private String summaryResult = null;
 
   // Incremental display cache for buildLiveDisplay
   private StringBuilder cachedConfirmedText = new StringBuilder();
@@ -324,6 +325,36 @@ public class MainActivity extends AppCompatActivity {
         ClipboardManager clipboard = (ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE);
         clipboard.setPrimaryClip(ClipData.newPlainText("wenet_result", text));
         Toast.makeText(this, "Copied", Toast.LENGTH_SHORT).show();
+      }
+    });
+
+    Button summaryButton = findViewById(R.id.summaryButton);
+    summaryButton.setOnClickListener(view -> {
+      if (summaryResult != null) {
+        new AlertDialog.Builder(this)
+            .setTitle("요약")
+            .setMessage(summaryResult)
+            .setPositiveButton("확인", null)
+            .setNeutralButton("복사", (d, w) -> {
+              ClipboardManager cb = (ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE);
+              cb.setPrimaryClip(ClipData.newPlainText("wenet_summary", summaryResult));
+              Toast.makeText(this, "Copied", Toast.LENGTH_SHORT).show();
+            })
+            .show();
+      } else {
+        String text = (timestampedResult != null && !timestampedResult.isEmpty())
+            ? timestampedResult
+            : ((TextView) findViewById(R.id.textView)).getText().toString().trim();
+        if (text.isEmpty()) {
+          Toast.makeText(this, "요약할 내용이 없습니다.", Toast.LENGTH_SHORT).show();
+          return;
+        }
+        new AlertDialog.Builder(this)
+            .setTitle("요약")
+            .setMessage("전체 내용을 AI로 요약할까요?")
+            .setNegativeButton("취소", null)
+            .setPositiveButton("진행", (d, w) -> requestOpenAiSummary(text))
+            .show();
       }
     });
 
@@ -1283,6 +1314,19 @@ public class MainActivity extends AppCompatActivity {
   // --- Playback ---
 
   private void enterPlaybackMode(String recordingName) {
+    summaryResult = null;
+    try {
+      File summaryFile = new File(RecordingManager.getSummaryPath(this, recordingName));
+      if (summaryFile.exists()) {
+        FileInputStream fis = new FileInputStream(summaryFile);
+        byte[] data = new byte[(int) summaryFile.length()];
+        fis.read(data);
+        fis.close();
+        summaryResult = new String(data, "UTF-8");
+      }
+    } catch (Exception e) {
+      Log.e(LOG_TAG, "Summary load error: " + e.getMessage());
+    }
     currentPlaybackRecording = recordingName;
     if (getSupportActionBar() != null) getSupportActionBar().setTitle(recordingName);
 
@@ -1580,6 +1624,107 @@ public class MainActivity extends AppCompatActivity {
 
   private int bytesToMs(long bytes) {
     return (int) (bytes * 1000L / (SAMPLE_RATE * 2));
+  }
+
+  private void requestOpenAiSummary(String text) {
+    String apiKey = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
+        .getString("openai_api_key", "").trim();
+    if (apiKey.isEmpty() || !apiKey.startsWith("sk-")) {
+      new AlertDialog.Builder(this)
+          .setMessage("Settings에서 OpenAI API 키(sk-...)를 입력해주세요.")
+          .setPositiveButton("확인", null)
+          .show();
+      return;
+    }
+    android.app.ProgressDialog progressDialog = new android.app.ProgressDialog(this);
+    progressDialog.setMessage("요약 중...");
+    progressDialog.setCancelable(false);
+    progressDialog.show();
+    new Thread(() -> {
+      try {
+        java.net.URL url = new java.net.URL("https://api.openai.com/v1/chat/completions");
+        java.net.HttpURLConnection conn = (java.net.HttpURLConnection) url.openConnection();
+        conn.setRequestMethod("POST");
+        conn.setRequestProperty("Content-Type", "application/json; charset=UTF-8");
+        conn.setRequestProperty("Authorization", "Bearer " + apiKey);
+        conn.setDoOutput(true);
+        conn.setConnectTimeout(15000);
+        conn.setReadTimeout(30000);
+
+        String escaped = text.replace("\\", "\\\\").replace("\"", "\\\"")
+            .replace("\n", "\\n").replace("\r", "");
+        String body = "{\"model\":\"gpt-4o-mini\",\"messages\":["
+            + "{\"role\":\"system\",\"content\":\"다음 음성 인식 텍스트를 핵심 내용 위주로 한국어로 간결하게 요약해주세요.\"},"
+            + "{\"role\":\"user\",\"content\":\"" + escaped + "\"}]}";
+
+        byte[] bodyBytes = body.getBytes("UTF-8");
+        conn.getOutputStream().write(bodyBytes);
+
+        int code = conn.getResponseCode();
+        java.io.InputStream is = (code == 200) ? conn.getInputStream() : conn.getErrorStream();
+        java.io.BufferedReader reader = new java.io.BufferedReader(new java.io.InputStreamReader(is, "UTF-8"));
+        StringBuilder sb = new StringBuilder();
+        String line;
+        while ((line = reader.readLine()) != null) sb.append(line);
+        reader.close();
+        conn.disconnect();
+
+        String response = sb.toString();
+        String summary;
+        if (code == 200) {
+          // Parse "content" from choices[0].message.content
+          int idx = response.indexOf("\"content\":");
+          // skip role content, find the message content
+          int msgIdx = response.indexOf("\"message\":");
+          int contentIdx = response.indexOf("\"content\":", msgIdx);
+          if (contentIdx < 0) contentIdx = idx;
+          int start = response.indexOf("\"", contentIdx + 10) + 1;
+          int end = start;
+          while (end < response.length()) {
+            char c = response.charAt(end);
+            if (c == '\\') { end += 2; continue; }
+            if (c == '"') break;
+            end++;
+          }
+          summary = response.substring(start, end)
+              .replace("\\n", "\n").replace("\\\"", "\"").replace("\\\\", "\\");
+        } else {
+          summary = "오류 " + code + ": " + response;
+        }
+        final String finalSummary = summary;
+        if (code == 200 && currentPlaybackRecording != null) {
+          try {
+            FileOutputStream fos = new FileOutputStream(
+                RecordingManager.getSummaryPath(MainActivity.this, currentPlaybackRecording));
+            fos.write(finalSummary.getBytes("UTF-8"));
+            fos.flush();
+            fos.close();
+          } catch (Exception e) {
+            Log.e(LOG_TAG, "Summary save error: " + e.getMessage());
+          }
+        }
+        runOnUiThread(() -> {
+          progressDialog.dismiss();
+          summaryResult = finalSummary;
+          new AlertDialog.Builder(this)
+              .setTitle("요약")
+              .setMessage(finalSummary)
+              .setPositiveButton("확인", null)
+              .setNeutralButton("복사", (d, w) -> {
+                ClipboardManager cb = (ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE);
+                cb.setPrimaryClip(ClipData.newPlainText("wenet_summary", finalSummary));
+                Toast.makeText(this, "Copied", Toast.LENGTH_SHORT).show();
+              })
+              .show();
+        });
+      } catch (Exception e) {
+        Log.e(LOG_TAG, "OpenAI summary error: " + e.getMessage());
+        runOnUiThread(() -> {
+          progressDialog.dismiss();
+          Toast.makeText(this, "요약 실패: " + e.getMessage(), Toast.LENGTH_LONG).show();
+        });
+      }
+    }).start();
   }
 
   private String formatTimeMs(int ms) {

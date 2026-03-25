@@ -38,18 +38,37 @@
 
       </ScrollView>
 
-      <Button
-        android:id="@+id/copyButton"
+      <LinearLayout
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
         android:layout_gravity="bottom|end"
         android:layout_margin="8dp"
-        android:textSize="9sp"
-        android:minWidth="0dp"
-        android:minHeight="0dp"
-        android:padding="6dp"
-        android:text="Copy"
-        android:alpha="0.7" />
+        android:orientation="horizontal">
+
+        <Button
+          android:id="@+id/summaryButton"
+          android:layout_width="wrap_content"
+          android:layout_height="wrap_content"
+          android:textSize="9sp"
+          android:minWidth="0dp"
+          android:minHeight="0dp"
+          android:padding="6dp"
+          android:layout_marginEnd="4dp"
+          android:text="Summary"
+          android:alpha="0.7" />
+
+        <Button
+          android:id="@+id/copyButton"
+          android:layout_width="wrap_content"
+          android:layout_height="wrap_content"
+          android:textSize="9sp"
+          android:minWidth="0dp"
+          android:minHeight="0dp"
+          android:padding="6dp"
+          android:text="Copy"
+          android:alpha="0.7" />
+
+      </LinearLayout>
 
     </FrameLayout>
 

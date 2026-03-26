@@ -66,7 +66,7 @@ public class KaraokeController {
   }
 
   /** Build SpannableStringBuilder and set on textView. */
-  public void buildText(TextView textView) {
+  public void buildText(TextView textView, long startOfDayMs) {
     if (wordSpans == null || wordSpans.isEmpty()) return;
 
     karaokeSSB = new SpannableStringBuilder();
@@ -89,7 +89,7 @@ public class KaraokeController {
       if (sentenceStartMs == -1) {
         if (needNewLine) karaokeSSB.append("\n");
         sentenceStartMs = ws.startMs;
-        karaokeSSB.append("[").append(formatTimeMs(sentenceStartMs)).append("] ");
+        karaokeSSB.append("[").append(formatTimeMs((int)(sentenceStartMs + startOfDayMs))).append("] ");
       }
       if ("\u2581".equals(ws.word)) {
         karaokeSpanStarts[i] = karaokeSSB.length();
@@ -184,12 +184,12 @@ public class KaraokeController {
   }
 
   /** Build timestamped text from loaded word spans. */
-  public String buildTimestampedText() {
-    return buildTimestampedTextFromSpans(wordSpans);
+  public String buildTimestampedText(long startOfDayMs) {
+    return buildTimestampedTextFromSpans(wordSpans, startOfDayMs);
   }
 
   /** Build timestamped text from a WordSpan list. */
-  public static String buildTimestampedTextFromSpans(List<WordSpan> spans) {
+  public static String buildTimestampedTextFromSpans(List<WordSpan> spans, long startOfDayMs) {
     if (spans == null || spans.isEmpty()) return "";
     StringBuilder result = new StringBuilder();
     StringBuilder sentence = new StringBuilder();
@@ -197,7 +197,7 @@ public class KaraokeController {
     for (WordSpan ws : spans) {
       if ("\n".equals(ws.word)) {
         if (sentence.toString().trim().length() > 0) {
-          result.append("[").append(formatTimeMs(sentenceStartMs)).append("] ")
+          result.append("[").append(formatTimeMs((int)(sentenceStartMs + startOfDayMs))).append("] ")
               .append(sentence.toString().trim()).append("\n");
           sentence = new StringBuilder();
           sentenceStartMs = -1;
@@ -209,14 +209,14 @@ public class KaraokeController {
       else sentence.append(ws.word);
     }
     if (sentence.toString().trim().length() > 0) {
-      result.append("[").append(formatTimeMs(sentenceStartMs)).append("] ")
+      result.append("[").append(formatTimeMs((int)(sentenceStartMs + startOfDayMs))).append("] ")
           .append(sentence.toString().trim()).append("\n");
     }
     return result.toString().trim();
   }
 
   /** Build timestamped text from a timed-result JSON string. */
-  public static String buildTimestampedTextFromJson(String timedJson) {
+  public static String buildTimestampedTextFromJson(String timedJson, long startOfDayMs) {
     try {
       JSONArray arr = new JSONArray(timedJson);
       if (arr.length() == 0) return "";
@@ -229,7 +229,7 @@ public class KaraokeController {
         int startMs = obj.getInt("s");
         if ("\n".equals(w)) {
           if (sentence.toString().trim().length() > 0) {
-            result.append("[").append(formatTimeMs(sentenceStartMs)).append("] ")
+            result.append("[").append(formatTimeMs((int)(sentenceStartMs + startOfDayMs))).append("] ")
                 .append(sentence.toString().trim()).append("\n");
             sentence = new StringBuilder();
             sentenceStartMs = -1;
@@ -241,7 +241,7 @@ public class KaraokeController {
         else sentence.append(w);
       }
       if (sentence.toString().trim().length() > 0) {
-        result.append("[").append(formatTimeMs(sentenceStartMs)).append("] ")
+        result.append("[").append(formatTimeMs((int)(sentenceStartMs + startOfDayMs))).append("] ")
             .append(sentence.toString().trim()).append("\n");
       }
       return result.toString().trim();

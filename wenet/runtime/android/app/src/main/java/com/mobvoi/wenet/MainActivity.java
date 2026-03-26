@@ -168,6 +168,7 @@ public class MainActivity extends AppCompatActivity {
   // Karaoke
   private final KaraokeController karaokeController = new KaraokeController();
   private String currentPlaybackRecording = null;
+  private long recordingStartOfDayMs = 0; // ms since midnight of recording start
 
   public static void assetsInit(Context context) throws IOException {
     AssetManager assetMgr = context.getAssets();
@@ -365,6 +366,7 @@ public class MainActivity extends AppCompatActivity {
         startBluetoothMic();
         startRecord = true;
         currentRecordingName = RecordingManager.createRecordingDir(this);
+        recordingStartOfDayMs = parseStartOfDayMs(currentRecordingName);
         if (getSupportActionBar() != null) getSupportActionBar().setTitle(currentRecordingName);
         String codec = getSharedPreferences("wenet_settings", MODE_PRIVATE).getString("codec_type", "opus");
         String audioOutPath;
@@ -900,7 +902,7 @@ public class MainActivity extends AppCompatActivity {
           saveTimedResult();
           // Build timestamped text for copy & Slack
           try {
-            timestampedResult = KaraokeController.buildTimestampedTextFromJson(Recognize.getTimedResult());
+            timestampedResult = KaraokeController.buildTimestampedTextFromJson(Recognize.getTimedResult(), recordingStartOfDayMs);
           } catch (Exception e) {
             timestampedResult = Recognize.getResult();
           }
@@ -1315,6 +1317,7 @@ public class MainActivity extends AppCompatActivity {
 
   private void enterPlaybackMode(String recordingName) {
     summaryResult = null;
+    recordingStartOfDayMs = parseStartOfDayMs(recordingName);
     try {
       File summaryFile = new File(RecordingManager.getSummaryPath(this, recordingName));
       if (summaryFile.exists()) {
@@ -1366,7 +1369,7 @@ public class MainActivity extends AppCompatActivity {
     int durMs = (int) Math.min(durationMs, Integer.MAX_VALUE);
 
     karaokeController.load(this, recordingName);
-    timestampedResult = karaokeController.buildTimestampedText();
+    timestampedResult = karaokeController.buildTimestampedText(recordingStartOfDayMs);
 
     LinearLayout playbackLayout = findViewById(R.id.playbackLayout);
     playbackLayout.setVisibility(View.VISIBLE);
@@ -1728,13 +1731,26 @@ public class MainActivity extends AppCompatActivity {
   }
 
   private String formatTimeMs(int ms) {
-    return KaraokeController.formatTimeMs(ms);
+    return KaraokeController.formatTimeMs((int)(ms + recordingStartOfDayMs));
+  }
+
+  /** Parse recording name (yyyyMMdd_HHmmss) → ms since midnight. */
+  private long parseStartOfDayMs(String name) {
+    try {
+      if (name != null && name.length() >= 15) {
+        int h = Integer.parseInt(name.substring(9, 11));
+        int m = Integer.parseInt(name.substring(11, 13));
+        int s = Integer.parseInt(name.substring(13, 15));
+        return (h * 3600L + m * 60L + s) * 1000L;
+      }
+    } catch (Exception ignored) {}
+    return 0;
   }
 
   // --- Karaoke ---
 
   private void buildKaraokeText() {
-    karaokeController.buildText((TextView) findViewById(R.id.textView));
+    karaokeController.buildText((TextView) findViewById(R.id.textView), recordingStartOfDayMs);
   }
 
   private void updateKaraokeHighlight(int currentMs) {

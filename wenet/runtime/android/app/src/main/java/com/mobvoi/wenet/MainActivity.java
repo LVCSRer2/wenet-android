@@ -332,16 +332,7 @@ public class MainActivity extends AppCompatActivity {
     Button summaryButton = findViewById(R.id.summaryButton);
     summaryButton.setOnClickListener(view -> {
       if (summaryResult != null) {
-        new AlertDialog.Builder(this)
-            .setTitle("요약")
-            .setMessage(summaryResult)
-            .setPositiveButton("확인", null)
-            .setNeutralButton("복사", (d, w) -> {
-              ClipboardManager cb = (ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE);
-              cb.setPrimaryClip(ClipData.newPlainText("wenet_summary", summaryResult));
-              Toast.makeText(this, "Copied", Toast.LENGTH_SHORT).show();
-            })
-            .show();
+        showSummaryDialog(summaryResult, playbackController.getPositionMs());
       } else {
         String text = (timestampedResult != null && !timestampedResult.isEmpty())
             ? timestampedResult
@@ -1629,6 +1620,65 @@ public class MainActivity extends AppCompatActivity {
     return (int) (bytes * 1000L / (SAMPLE_RATE * 2));
   }
 
+  private void showSummaryDialog(String summary, long currentPositionMs) {
+    String[] lines = summary.split("\n");
+    android.widget.ListView lv = new android.widget.ListView(this);
+    lv.setPadding(0, 8, 0, 8);
+    android.widget.ArrayAdapter<String> adapter =
+        new android.widget.ArrayAdapter<>(this, android.R.layout.simple_list_item_1, lines);
+    lv.setAdapter(adapter);
+
+    AlertDialog dialog = new AlertDialog.Builder(this)
+        .setTitle("요약")
+        .setView(lv)
+        .setPositiveButton("확인", null)
+        .setNeutralButton("복사", (d, w) -> {
+          ClipboardManager cb = (ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE);
+          cb.setPrimaryClip(ClipData.newPlainText("wenet_summary", summary));
+          Toast.makeText(this, "Copied", Toast.LENGTH_SHORT).show();
+        })
+        .create();
+
+    // Scroll to closest summary item to current playback position
+    long currentAbsoluteMs = currentPositionMs + recordingStartOfDayMs;
+    int closestIdx = 0;
+    long closestDiff = Long.MAX_VALUE;
+    java.util.regex.Pattern tsPattern =
+        java.util.regex.Pattern.compile("^\\[(\\d{2}):(\\d{2}):(\\d{2})\\]");
+    for (int i = 0; i < lines.length; i++) {
+      java.util.regex.Matcher m = tsPattern.matcher(lines[i]);
+      if (m.find()) {
+        int h = Integer.parseInt(m.group(1));
+        int min = Integer.parseInt(m.group(2));
+        int s = Integer.parseInt(m.group(3));
+        long lineMs = (h * 3600L + min * 60L + s) * 1000L;
+        long diff = Math.abs(lineMs - currentAbsoluteMs);
+        if (diff < closestDiff) { closestDiff = diff; closestIdx = i; }
+      }
+    }
+    final int scrollTo = closestIdx;
+
+    lv.setOnItemClickListener((parent, view, pos, id) -> {
+      // Parse [HH:MM:SS] from the start of the line
+      String line = lines[pos];
+      java.util.regex.Matcher m =
+          java.util.regex.Pattern.compile("^\\[(\\d{2}):(\\d{2}):(\\d{2})\\]").matcher(line);
+      if (m.find()) {
+        int h = Integer.parseInt(m.group(1));
+        int min = Integer.parseInt(m.group(2));
+        int s = Integer.parseInt(m.group(3));
+        long absoluteMs = (h * 3600L + min * 60L + s) * 1000L;
+        int offsetMs = (int) Math.max(0, absoluteMs - recordingStartOfDayMs);
+        dialog.dismiss();
+        seekToMs(offsetMs);
+        if (!playbackController.isPlaying()) resumePlayback();
+      }
+    });
+
+    dialog.show();
+    lv.post(() -> lv.setSelection(scrollTo));
+  }
+
   private void requestOpenAiSummary(String text) {
     String apiKey = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
         .getString("openai_api_key", "").trim();
@@ -1709,16 +1759,7 @@ public class MainActivity extends AppCompatActivity {
         runOnUiThread(() -> {
           progressDialog.dismiss();
           summaryResult = finalSummary;
-          new AlertDialog.Builder(this)
-              .setTitle("요약")
-              .setMessage(finalSummary)
-              .setPositiveButton("확인", null)
-              .setNeutralButton("복사", (d, w) -> {
-                ClipboardManager cb = (ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE);
-                cb.setPrimaryClip(ClipData.newPlainText("wenet_summary", finalSummary));
-                Toast.makeText(this, "Copied", Toast.LENGTH_SHORT).show();
-              })
-              .show();
+          showSummaryDialog(finalSummary, playbackController.getPositionMs());
         });
       } catch (Exception e) {
         Log.e(LOG_TAG, "OpenAI summary error: " + e.getMessage());
@@ -1951,5 +1992,14 @@ public class MainActivity extends AppCompatActivity {
     });
 
     dialog.show();
+
+    // Scroll to currently viewed recording
+    if (currentPlaybackRecording != null) {
+      int pos = allNames.indexOf(currentPlaybackRecording);
+      if (pos >= 0) {
+        final int scrollPos = pos;
+        listView.post(() -> listView.setSelection(scrollPos));
+      }
+    }
   }
 }

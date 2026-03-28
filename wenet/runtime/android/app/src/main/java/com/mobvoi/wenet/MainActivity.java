@@ -735,7 +735,8 @@ public class MainActivity extends AppCompatActivity {
           }
         }
         if (AudioRecord.ERROR_INVALID_OPERATION != read && read > 0) {
-          realtimeEncoder.feed(buffer, read);
+          // Encoder runs at 8kHz — downsample 16kHz AudioRecord buffer
+          realtimeEncoder.feed(downsample2to1(buffer), read / 2);
           try {
             short[] copy = new short[read];
             System.arraycopy(buffer, 0, copy, 0, read);

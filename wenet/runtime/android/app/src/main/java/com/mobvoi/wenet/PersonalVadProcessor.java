@@ -54,6 +54,9 @@ public class PersonalVadProcessor {
     private static final float THRESHOLD_OFF = 0.3f;
     private static final int HANGOVER_FRAMES = 4;
 
+    // Periodic LSTM state reset to prevent drift (every 5 seconds)
+    private static final int RESET_INTERVAL_CHUNKS = 20; // 20 × 250ms = 5s
+
     // Precomputed DFT basis (Hann-windowed cosine/sine) [N_BINS × N_FFT]
     // cosTable[k * N_FFT + n] = hann[n] * cos(2π k n / N_FFT)
     final float[] cosTable;
@@ -81,6 +84,9 @@ public class PersonalVadProcessor {
 
     // Timing (in 16 kHz samples)
     private long totalSamplesProcessed = 0;
+
+    // Periodic reset counter
+    private int chunkCount = 0;
 
     // Hysteresis state
     private boolean inMyVoice = false;
@@ -218,6 +224,7 @@ public class PersonalVadProcessor {
         Arrays.fill(overlapBuf, (short) 0);
         Arrays.fill(h, 0f);
         Arrays.fill(c, 0f);
+        chunkCount = 0;
         inMyVoice = false;
         hangoverCount = 0;
         segmentStartMs = -1;
@@ -283,6 +290,13 @@ public class PersonalVadProcessor {
 
         float targetProb = inferVad(inputFlat);
         updateHysteresis(targetProb, chunkStartMs, chunkEndMs);
+
+        chunkCount++;
+        if (chunkCount >= RESET_INTERVAL_CHUNKS) {
+            Arrays.fill(h, 0f);
+            Arrays.fill(c, 0f);
+            chunkCount = 0;
+        }
     }
 
     private float inferVad(float[] inputFlat) {

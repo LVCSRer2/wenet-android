@@ -18,8 +18,8 @@ import java.util.Arrays;
 public class RealtimeEncoder {
 
   private static final String TAG = "RealtimeEncoder";
-  private static final int SAMPLE_RATE = 16000;
-  private static final int FRAME_SAMPLES = 320; // 20 ms at 16 kHz
+  private static final int SAMPLE_RATE = 8000;
+  private static final int FRAME_SAMPLES = 160; // 20 ms at 8 kHz
 
   private MediaCodec codec = null;
   private MediaMuxer muxer = null;

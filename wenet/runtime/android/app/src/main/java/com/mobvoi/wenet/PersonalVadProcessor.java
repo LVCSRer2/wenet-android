@@ -90,6 +90,9 @@ public class PersonalVadProcessor {
     // Timing (in 16 kHz samples)
     private long totalSamplesProcessed = 0;
 
+    // Last inferred target speaker probability (updated each processChunk)
+    private float lastTargetProb = 0f;
+
     // Hysteresis state
     private boolean inMyVoice = false;
     private int hangoverCount = 0;
@@ -188,6 +191,10 @@ public class PersonalVadProcessor {
         return initialized && speakerEmbedding != null;
     }
 
+    public float getLastTargetProb() {
+        return lastTargetProb;
+    }
+
     /** Feed 16 kHz PCM samples. Thread-safe if called from a single thread. */
     public void process(short[] pcm, int length) {
         if (!isReady()) return;
@@ -272,6 +279,7 @@ public class PersonalVadProcessor {
         }
         // 3. Actual inference on current chunk
         float targetProb = inferVad(buildInput(currentMel));
+        lastTargetProb = targetProb;
 
         // Save current mel frames as context for next chunk's warmup
         System.arraycopy(currentMel, 0, contextMelBuf, 0, currentMel.length);

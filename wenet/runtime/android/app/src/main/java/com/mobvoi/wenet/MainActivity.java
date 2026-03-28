@@ -879,6 +879,8 @@ public class MainActivity extends AppCompatActivity {
           // Feed PersonalVad with native 16 kHz
           if (personalVad != null && personalVad.isReady()) {
             personalVad.process(data, data.length);
+            ((VadProbView) findViewById(R.id.vadProbView))
+                .setCurrentPersonalProb(personalVad.getLastTargetProb());
           }
 
           // Downsample 16 kHz → 8 kHz for SileroVad / Recognize / visualization

@@ -19,12 +19,15 @@ public class VadProbView extends View {
     private float silenceThreshold = 0.3f;
 
     private final float[] probBuffer = new float[BAR_COUNT];
+    private final float[] personalProbBuffer = new float[BAR_COUNT]; // PersonalVAD target prob
     private float currentProb = 0f;
+    private float currentPersonalProb = 0f;
     private int sampleAccum = 0;
     private final Paint barPaint = new Paint();
     private final Paint linePaint = new Paint();
     private final Paint bgPaint = new Paint();
     private final Paint labelPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+    private final Paint personalLinePaint = new Paint(Paint.ANTI_ALIAS_FLAG);
 
     public void setThresholds(float speech, float silence) {
         this.speechThreshold = speech;
@@ -58,10 +61,16 @@ public class VadProbView extends View {
         labelPaint.setTextSize(18f);
         cursorPaint.setColor(0xFFFF0000);
         cursorPaint.setStrokeWidth(3f);
+        personalLinePaint.setColor(0xFF00E5FF); // cyan for PersonalVAD
+        personalLinePaint.setStrokeWidth(2.5f);
     }
 
     public void setCurrentProb(float prob) {
         this.currentProb = prob;
+    }
+
+    public void setCurrentPersonalProb(float prob) {
+        this.currentPersonalProb = prob;
     }
 
     /** Sample-count based advancement: adds bars at SAMPLES_PER_BAR rate. */
@@ -70,6 +79,8 @@ public class VadProbView extends View {
         while (sampleAccum >= SAMPLES_PER_BAR) {
             System.arraycopy(probBuffer, 1, probBuffer, 0, BAR_COUNT - 1);
             probBuffer[BAR_COUNT - 1] = currentProb;
+            System.arraycopy(personalProbBuffer, 1, personalProbBuffer, 0, BAR_COUNT - 1);
+            personalProbBuffer[BAR_COUNT - 1] = currentPersonalProb;
             sampleAccum -= SAMPLES_PER_BAR;
         }
     }
@@ -81,8 +92,10 @@ public class VadProbView extends View {
 
     public void zero() {
         java.util.Arrays.fill(probBuffer, 0f);
+        java.util.Arrays.fill(personalProbBuffer, 0f);
         sampleAccum = 0;
         currentProb = 0f;
+        currentPersonalProb = 0f;
     }
 
     /** Set full probability data for DAW playback mode. */
@@ -147,8 +160,20 @@ public class VadProbView extends View {
             canvas.drawRect(left, h - barH, right, h, barPaint);
         }
 
+        // PersonalVAD target prob: cyan line graph overlay
+        float halfBar = barWidth / 2f;
+        for (int i = 1; i < BAR_COUNT; i++) {
+            float x1 = (i - 1) * barWidth + halfBar;
+            float y1 = h * (1f - personalProbBuffer[i - 1]);
+            float x2 = i * barWidth + halfBar;
+            float y2 = h * (1f - personalProbBuffer[i]);
+            canvas.drawLine(x1, y1, x2, y2, personalLinePaint);
+        }
+
         // Label
         canvas.drawText("VAD", 4, h - 4, labelPaint);
+        // PersonalVAD label (top-right)
+        canvas.drawText("P-VAD", w - labelPaint.measureText("P-VAD") - 4, 18f, labelPaint);
 
         // Cursor in playback mode
         if (playbackMode && cursorFraction >= 0f) {

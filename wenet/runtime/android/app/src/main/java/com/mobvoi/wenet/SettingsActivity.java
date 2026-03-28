@@ -182,7 +182,7 @@ public class SettingsActivity extends AppCompatActivity {
         // Personal VAD Deactivation Threshold: SeekBar 0~100 → 0.00~1.00
         SeekBar personalVadDeactivationSeekBar = findViewById(R.id.personalVadDeactivationSeekBar);
         TextView personalVadDeactivationLabel = findViewById(R.id.personalVadDeactivationLabel);
-        int savedDeactivation = prefs.getInt(KEY_PERSONAL_VAD_DEACTIVATION, 50); // default 0.50
+        int savedDeactivation = prefs.getInt(KEY_PERSONAL_VAD_DEACTIVATION, 70); // default 0.70
         personalVadDeactivationSeekBar.setProgress(savedDeactivation);
         personalVadDeactivationLabel.setText(String.format("Deactivation Threshold: %.2f", savedDeactivation / 100f));
         personalVadDeactivationSeekBar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {

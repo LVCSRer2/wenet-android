@@ -385,7 +385,7 @@ public class MainActivity extends AppCompatActivity {
             } else {
               android.content.SharedPreferences p = getSharedPreferences(PREFS_NAME, MODE_PRIVATE);
               float activation = p.getInt("personal_vad_activation", 80) / 100f;
-              float deactivation = p.getInt("personal_vad_deactivation", 50) / 100f;
+              float deactivation = p.getInt("personal_vad_deactivation", 70) / 100f;
               personalVad.setThresholds(activation, deactivation);
             }
           } catch (Exception e) {
@@ -1269,7 +1269,7 @@ public class MainActivity extends AppCompatActivity {
             cachedInProgressSpannable.append(w);
             if (personalVad != null && personalVad.isReady() && !isTargetSpeaker(startMs)) {
               cachedInProgressSpannable.setSpan(
-                  new ForegroundColorSpan(0xFFAAAAAA),
+                  new ForegroundColorSpan(0xFFDDDDDD),
                   wordStart, wordStart + w.length(),
                   Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
             }

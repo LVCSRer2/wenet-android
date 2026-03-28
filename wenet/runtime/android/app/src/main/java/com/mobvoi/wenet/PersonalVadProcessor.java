@@ -56,7 +56,7 @@ public class PersonalVadProcessor {
 
     // Hysteresis
     private float thresholdOn = 0.8f;
-    private float thresholdOff = 0.5f;
+    private float thresholdOff = 0.7f;
     private static final int HANGOVER_FRAMES = 4;
 
     // Precomputed DFT basis (Hann-windowed cosine/sine) [N_BINS × N_FFT]

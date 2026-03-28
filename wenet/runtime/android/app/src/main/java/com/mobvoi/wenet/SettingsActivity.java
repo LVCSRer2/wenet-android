@@ -31,6 +31,8 @@ public class SettingsActivity extends AppCompatActivity {
     private static final String KEY_VAD_TRAILING = "vad_trailing";
     private static final String KEY_RESULT_FONT_SIZE = "result_font_size";
     private static final String KEY_CODEC = "codec_type";
+    private static final String KEY_PERSONAL_VAD_ACTIVATION = "personal_vad_activation";
+    private static final String KEY_PERSONAL_VAD_DEACTIVATION = "personal_vad_deactivation";
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -163,6 +165,34 @@ public class SettingsActivity extends AppCompatActivity {
             @Override public void onStopTrackingTouch(SeekBar sb) {}
         });
 
+        // Personal VAD Activation Threshold: SeekBar 0~100 → 0.00~1.00
+        SeekBar personalVadActivationSeekBar = findViewById(R.id.personalVadActivationSeekBar);
+        TextView personalVadActivationLabel = findViewById(R.id.personalVadActivationLabel);
+        int savedActivation = prefs.getInt(KEY_PERSONAL_VAD_ACTIVATION, 80); // default 0.80
+        personalVadActivationSeekBar.setProgress(savedActivation);
+        personalVadActivationLabel.setText(String.format("Activation Threshold: %.2f", savedActivation / 100f));
+        personalVadActivationSeekBar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+            @Override public void onProgressChanged(SeekBar sb, int progress, boolean fromUser) {
+                personalVadActivationLabel.setText(String.format("Activation Threshold: %.2f", progress / 100f));
+            }
+            @Override public void onStartTrackingTouch(SeekBar sb) {}
+            @Override public void onStopTrackingTouch(SeekBar sb) {}
+        });
+
+        // Personal VAD Deactivation Threshold: SeekBar 0~100 → 0.00~1.00
+        SeekBar personalVadDeactivationSeekBar = findViewById(R.id.personalVadDeactivationSeekBar);
+        TextView personalVadDeactivationLabel = findViewById(R.id.personalVadDeactivationLabel);
+        int savedDeactivation = prefs.getInt(KEY_PERSONAL_VAD_DEACTIVATION, 50); // default 0.50
+        personalVadDeactivationSeekBar.setProgress(savedDeactivation);
+        personalVadDeactivationLabel.setText(String.format("Deactivation Threshold: %.2f", savedDeactivation / 100f));
+        personalVadDeactivationSeekBar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+            @Override public void onProgressChanged(SeekBar sb, int progress, boolean fromUser) {
+                personalVadDeactivationLabel.setText(String.format("Deactivation Threshold: %.2f", progress / 100f));
+            }
+            @Override public void onStartTrackingTouch(SeekBar sb) {}
+            @Override public void onStopTrackingTouch(SeekBar sb) {}
+        });
+
         // Enrollment section
         TextView enrollmentStatusText = findViewById(R.id.enrollmentStatusText);
         File embFile = new File(getFilesDir(), "speaker_embedding.bin");
@@ -205,6 +235,8 @@ public class SettingsActivity extends AppCompatActivity {
             prefs.edit().putInt(KEY_VAD_PREBUFFER, vadPreBufferSeekBar.getProgress()).apply();
             prefs.edit().putInt(KEY_VAD_TRAILING, vadTrailingSilenceSeekBar.getProgress()).apply();
             prefs.edit().putInt(KEY_RESULT_FONT_SIZE, resultFontSizeSeekBar.getProgress() + 15).apply();
+            prefs.edit().putInt(KEY_PERSONAL_VAD_ACTIVATION, personalVadActivationSeekBar.getProgress()).apply();
+            prefs.edit().putInt(KEY_PERSONAL_VAD_DEACTIVATION, personalVadDeactivationSeekBar.getProgress()).apply();
 
             Intent result = new Intent();
             boolean changed = false;

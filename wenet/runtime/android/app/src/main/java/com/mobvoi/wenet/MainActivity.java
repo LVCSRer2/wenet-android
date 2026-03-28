@@ -155,8 +155,8 @@ public class MainActivity extends AppCompatActivity {
   private String summaryResult = null;
 
   // Incremental display cache for buildLiveDisplay
-  private StringBuilder cachedConfirmedText = new StringBuilder();
-  private StringBuilder cachedInProgressSentence = new StringBuilder();
+  private SpannableStringBuilder cachedConfirmedSpannable = new SpannableStringBuilder();
+  private SpannableStringBuilder cachedInProgressSpannable = new SpannableStringBuilder();
   private int cachedInProgressStartMs = -1;
   private String lastPartialText = "";
   private String lastDisplayedText = "";
@@ -382,6 +382,11 @@ public class MainActivity extends AppCompatActivity {
             if (!personalVad.loadSpeakerEmbedding(embFile)) {
               personalVad.release();
               personalVad = null;
+            } else {
+              android.content.SharedPreferences p = getSharedPreferences(PREFS_NAME, MODE_PRIVATE);
+              float activation = p.getInt("personal_vad_activation", 80) / 100f;
+              float deactivation = p.getInt("personal_vad_deactivation", 50) / 100f;
+              personalVad.setThresholds(activation, deactivation);
             }
           } catch (Exception e) {
             Log.e(LOG_TAG, "PersonalVadProcessor init failed: " + e.getMessage());
@@ -391,8 +396,8 @@ public class MainActivity extends AppCompatActivity {
           personalVad = null;
         }
         Recognize.reset();
-        cachedConfirmedText = new StringBuilder();
-        cachedInProgressSentence = new StringBuilder();
+        cachedConfirmedSpannable = new SpannableStringBuilder();
+        cachedInProgressSpannable = new SpannableStringBuilder();
         cachedInProgressStartMs = -1;
         lastPartialText = "";
         lastDisplayedText = "";
@@ -1235,7 +1240,7 @@ public class MainActivity extends AppCompatActivity {
   /** Build live display using delta APIs: only new tokens from native, O(1) JNI cost. */
   private void updateLiveDisplayIncremental() {
     try {
-      // Process delta tokens (same logic as buildLiveDisplay)
+      // Process delta tokens — apply light gray to non-target speaker words
       String deltaJson = Recognize.getTimedResultDelta();
       if (deltaJson != null && !"[]".equals(deltaJson)) {
         org.json.JSONArray arr = new org.json.JSONArray(deltaJson);
@@ -1244,24 +1249,33 @@ public class MainActivity extends AppCompatActivity {
           String w = obj.getString("w");
           int startMs = obj.getInt("s");
           if ("\n".equals(w)) {
-            if (cachedInProgressSentence.length() > 0) {
-              cachedConfirmedText.append("[").append(formatTimeMs(cachedInProgressStartMs)).append("] ")
-                  .append(cachedInProgressSentence.toString().trim()).append("\n");
-              cachedInProgressSentence = new StringBuilder();
+            if (cachedInProgressSpannable.length() > 0) {
+              cachedConfirmedSpannable
+                  .append("[").append(formatTimeMs(cachedInProgressStartMs)).append("] ")
+                  .append(cachedInProgressSpannable)
+                  .append("\n");
+              cachedInProgressSpannable = new SpannableStringBuilder();
               cachedInProgressStartMs = -1;
             }
             continue;
           }
           if (cachedInProgressStartMs == -1) cachedInProgressStartMs = startMs;
           if ("\u2581".equals(w)) {
-            cachedInProgressSentence.append(" ");
+            cachedInProgressSpannable.append(" ");
           } else {
-            cachedInProgressSentence.append(w);
+            int wordStart = cachedInProgressSpannable.length();
+            cachedInProgressSpannable.append(w);
+            if (personalVad != null && personalVad.isReady() && !isTargetSpeaker(startMs)) {
+              cachedInProgressSpannable.setSpan(
+                  new ForegroundColorSpan(0xFFAAAAAA),
+                  wordStart, wordStart + w.length(),
+                  Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+            }
           }
         }
       }
 
-      // Build tail: in-progress sentence + partial
+      // Build tail: in-progress sentence (with spans) + partial (plain)
       String deltaResult = Recognize.getResultDelta();
       String partial = "";
       if (deltaResult != null) {
@@ -1270,17 +1284,22 @@ public class MainActivity extends AppCompatActivity {
       }
       lastPartialText = partial;
 
-      StringBuilder tail = new StringBuilder();
-      if (cachedInProgressSentence.length() > 0) {
+      SpannableStringBuilder tail = new SpannableStringBuilder();
+      if (cachedInProgressSpannable.length() > 0) {
         tail.append("[").append(formatTimeMs(cachedInProgressStartMs)).append("] ")
-            .append(cachedInProgressSentence.toString().trim());
+            .append(cachedInProgressSpannable);
       }
       if (!partial.isEmpty()) {
         if (tail.length() > 0) tail.append("\n");
         tail.append(partial);
       }
-      final String tailStr = tail.toString();
-      final int newConfirmedLen = cachedConfirmedText.length();
+
+      // Snapshot confirmed portion for UI thread (avoid race with ASR thread)
+      final int newConfirmedLen = cachedConfirmedSpannable.length();
+      final SpannableStringBuilder newConfirmedSnap = newConfirmedLen > lastAppendedConfirmedLength
+          ? new SpannableStringBuilder(cachedConfirmedSpannable, lastAppendedConfirmedLength, newConfirmedLen)
+          : null;
+      final SpannableStringBuilder finalTail = tail;
 
       runOnUiThread(() -> {
         TextView textView = findViewById(R.id.textView);
@@ -1288,14 +1307,13 @@ public class MainActivity extends AppCompatActivity {
         android.text.Editable editable = textView.getEditableText();
         if (editable == null) return;
 
-        // Append only new confirmed sentences (O(delta))
-        if (newConfirmedLen > lastAppendedConfirmedLength) {
-          String newConfirmed = cachedConfirmedText.substring(lastAppendedConfirmedLength, newConfirmedLen);
-          editable.replace(lastAppendedConfirmedLength, editable.length(), newConfirmed + tailStr);
+        if (newConfirmedSnap != null) {
+          SpannableStringBuilder combined = new SpannableStringBuilder(newConfirmedSnap);
+          combined.append(finalTail);
+          editable.replace(lastAppendedConfirmedLength, editable.length(), combined);
           lastAppendedConfirmedLength = newConfirmedLen;
         } else {
-          // Only tail changed: replace from confirmed end to view end (O(tail))
-          editable.replace(lastAppendedConfirmedLength, editable.length(), tailStr);
+          editable.replace(lastAppendedConfirmedLength, editable.length(), finalTail);
         }
 
         boolean atBottom = (scrollView.getChildAt(0).getBottom()
@@ -1307,9 +1325,17 @@ public class MainActivity extends AppCompatActivity {
     }
   }
 
+  /** Check if the word at wordStartMs belongs to the enrolled target speaker. */
+  private boolean isTargetSpeaker(int wordStartMs) {
+    if (personalVad == null || !personalVad.isReady()) return true;
+    for (long[] seg : personalVad.getSegments()) {
+      if (wordStartMs >= seg[0] && wordStartMs < seg[1]) return true;
+    }
+    return false;
+  }
+
   private String buildLiveDisplay() {
     try {
-      // Get only NEW timed tokens from native (O(delta) not O(total))
       String deltaJson = Recognize.getTimedResultDelta();
       if (deltaJson != null && !"[]".equals(deltaJson)) {
         JSONArray arr = new JSONArray(deltaJson);
@@ -1317,45 +1343,41 @@ public class MainActivity extends AppCompatActivity {
           JSONObject obj = arr.getJSONObject(i);
           String w = obj.getString("w");
           int startMs = obj.getInt("s");
-          // Newline marker = endpoint boundary
           if ("\n".equals(w)) {
-            if (cachedInProgressSentence.length() > 0) {
-              cachedConfirmedText.append("[").append(formatTimeMs(cachedInProgressStartMs)).append("] ")
-                  .append(cachedInProgressSentence.toString().trim()).append("\n");
-              cachedInProgressSentence = new StringBuilder();
+            if (cachedInProgressSpannable.length() > 0) {
+              cachedConfirmedSpannable
+                  .append("[").append(formatTimeMs(cachedInProgressStartMs)).append("] ")
+                  .append(cachedInProgressSpannable).append("\n");
+              cachedInProgressSpannable = new SpannableStringBuilder();
               cachedInProgressStartMs = -1;
             }
             continue;
           }
           if (cachedInProgressStartMs == -1) cachedInProgressStartMs = startMs;
           if ("\u2581".equals(w)) {
-            cachedInProgressSentence.append(" ");
+            cachedInProgressSpannable.append(" ");
           } else {
-            cachedInProgressSentence.append(w);
+            cachedInProgressSpannable.append(w);
           }
         }
       }
 
-      // Build display string
       String confirmed;
-      if (cachedInProgressSentence.length() > 0) {
-        confirmed = cachedConfirmedText.toString()
+      if (cachedInProgressSpannable.length() > 0) {
+        confirmed = cachedConfirmedSpannable.toString()
             + "[" + formatTimeMs(cachedInProgressStartMs) + "] "
-            + cachedInProgressSentence.toString().trim();
-      } else if (cachedConfirmedText.length() > 0) {
-        confirmed = cachedConfirmedText.substring(0, cachedConfirmedText.length() - 1);
+            + cachedInProgressSpannable.toString().trim();
+      } else if (cachedConfirmedSpannable.length() > 0) {
+        confirmed = cachedConfirmedSpannable.toString().substring(0, cachedConfirmedSpannable.length() - 1);
       } else {
         confirmed = "";
       }
 
-      // Get only partial result from native via delta API
       String deltaResult = Recognize.getResultDelta();
       String partial = "";
       if (deltaResult != null) {
         int sep = deltaResult.indexOf('\n');
-        if (sep >= 0) {
-          partial = deltaResult.substring(sep + 1).trim();
-        }
+        if (sep >= 0) partial = deltaResult.substring(sep + 1).trim();
       }
       lastPartialText = partial;
 

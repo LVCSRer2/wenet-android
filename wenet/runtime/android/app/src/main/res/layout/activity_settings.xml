@@ -259,9 +259,47 @@
     <TextView
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
+        android:text="Personal VAD"
+        android:textSize="16sp"
+        android:layout_marginTop="8dp"
+        android:layout_marginBottom="4dp" />
+
+    <TextView
+        android:id="@+id/personalVadActivationLabel"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="Activation Threshold: 0.80"
+        android:textSize="13sp" />
+
+    <SeekBar
+        android:id="@+id/personalVadActivationSeekBar"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:max="100"
+        android:progress="80" />
+
+    <TextView
+        android:id="@+id/personalVadDeactivationLabel"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="Deactivation Threshold: 0.50"
+        android:textSize="13sp"
+        android:layout_marginTop="4dp" />
+
+    <SeekBar
+        android:id="@+id/personalVadDeactivationSeekBar"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:max="100"
+        android:progress="50"
+        android:layout_marginBottom="16dp" />
+
+    <TextView
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
         android:text="내 목소리 등록"
         android:textSize="16sp"
-        android:layout_marginTop="24dp"
+        android:layout_marginTop="8dp"
         android:layout_marginBottom="8dp" />
 
     <TextView

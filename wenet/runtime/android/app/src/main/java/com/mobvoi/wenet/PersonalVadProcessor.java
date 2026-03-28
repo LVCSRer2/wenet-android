@@ -1,7 +1,6 @@
 package com.mobvoi.wenet;
 
 import android.content.Context;
-import android.content.res.AssetManager;
 import android.util.Log;
 
 import java.io.File;
@@ -24,6 +23,12 @@ import ai.onnxruntime.OrtSession;
  * Real-time Personal Voice Activity Detection.
  * Processes 16 kHz mono PCM and detects segments where the enrolled speaker is talking.
  * Uses personal_vad.onnx (stateful 2-layer LSTM, 3-class: silence / non-target / target).
+ *
+ * Stateless sliding-window approach (ts-vad-android style):
+ *   - Before each 250ms chunk: reset LSTM h/c to zero
+ *   - Warmup: replay previous chunk's mel features (updates h/c)
+ *   - Infer: run on current chunk (uses warmed-up h/c)
+ * This prevents LSTM state drift over long recordings.
  *
  * Call process() for each incoming PCM chunk (16 kHz).
  * Call flush() when recording ends, then getSegments() for the result.
@@ -50,15 +55,11 @@ public class PersonalVadProcessor {
     private static final int LSTM_HIDDEN = 64;
 
     // Hysteresis
-    private static final float THRESHOLD_ON = 0.5f;
-    private static final float THRESHOLD_OFF = 0.3f;
+    private float thresholdOn = 0.8f;
+    private float thresholdOff = 0.5f;
     private static final int HANGOVER_FRAMES = 4;
 
-    // Periodic LSTM state reset to prevent drift (every 5 seconds)
-    private static final int RESET_INTERVAL_CHUNKS = 20; // 20 × 250ms = 5s
-
     // Precomputed DFT basis (Hann-windowed cosine/sine) [N_BINS × N_FFT]
-    // cosTable[k * N_FFT + n] = hann[n] * cos(2π k n / N_FFT)
     final float[] cosTable;
     final float[] sinTable;
 
@@ -73,7 +74,7 @@ public class PersonalVadProcessor {
     private OrtSession vadSession = null;
     private boolean initialized = false;
 
-    // Stateful LSTM state — flattened [LSTM_LAYERS × LSTM_HIDDEN]
+    // LSTM state — flattened [LSTM_LAYERS × LSTM_HIDDEN] (reset each chunk in stateless mode)
     private final float[] h = new float[LSTM_LAYERS * LSTM_HIDDEN];
     private final float[] c = new float[LSTM_LAYERS * LSTM_HIDDEN];
 
@@ -82,11 +83,12 @@ public class PersonalVadProcessor {
     private final short[] accumBuf = new short[NEW_SAMPLES_PER_CHUNK];
     private int accumLen = 0;
 
+    // Context buffer: mel frames from the previous chunk (for LSTM warmup)
+    private final float[] contextMelBuf = new float[VAD_CHUNK_FRAMES * N_MELS];
+    private boolean hasContext = false;
+
     // Timing (in 16 kHz samples)
     private long totalSamplesProcessed = 0;
-
-    // Periodic reset counter
-    private int chunkCount = 0;
 
     // Hysteresis state
     private boolean inMyVoice = false;
@@ -114,6 +116,12 @@ public class PersonalVadProcessor {
 
         melFilterbank = loadMelFilterbank(context);
         initialized = loadVadModel(context);
+    }
+
+    /** Set activation/deactivation thresholds from Settings. */
+    public void setThresholds(float activationThreshold, float deactivationThreshold) {
+        this.thresholdOn = activationThreshold;
+        this.thresholdOff = deactivationThreshold;
     }
 
     private float[] loadMelFilterbank(Context context) {
@@ -199,14 +207,11 @@ public class PersonalVadProcessor {
     /** Finalize any open segment. Call after recording ends. */
     public void flush() {
         if (!isReady()) return;
-        // Process remaining buffered samples (< 4000)
         if (accumLen > 0) {
-            // Zero-pad to full chunk
             Arrays.fill(accumBuf, accumLen, NEW_SAMPLES_PER_CHUNK, (short) 0);
             processChunk();
             accumLen = 0;
         }
-        // Close any open segment
         if (inMyVoice && segmentStartMs >= 0) {
             long endMs = totalSamplesProcessed * 1000L / SR;
             segments.add(new long[]{segmentStartMs, endMs});
@@ -224,7 +229,8 @@ public class PersonalVadProcessor {
         Arrays.fill(overlapBuf, (short) 0);
         Arrays.fill(h, 0f);
         Arrays.fill(c, 0f);
-        chunkCount = 0;
+        Arrays.fill(contextMelBuf, 0f);
+        hasContext = false;
         inMyVoice = false;
         hangoverCount = 0;
         segmentStartMs = -1;
@@ -247,19 +253,39 @@ public class PersonalVadProcessor {
         short[] buf = new short[OVERLAP + NEW_SAMPLES_PER_CHUNK];
         System.arraycopy(overlapBuf, 0, buf, 0, OVERLAP);
         System.arraycopy(accumBuf, 0, buf, OVERLAP, NEW_SAMPLES_PER_CHUNK);
-
-        // Save new tail for next chunk
         System.arraycopy(accumBuf, NEW_SAMPLES_PER_CHUNK - OVERLAP, overlapBuf, 0, OVERLAP);
 
-        // Compute 25 log-mel frames → build [1, 25, 296] input
-        float[] inputFlat = new float[VAD_CHUNK_FRAMES * (N_MELS + EMBED_DIM)];
-        float[] powerSpec = new float[N_BINS];
-        float[] melFrame = new float[N_MELS];
+        // Compute 25 log-mel frames for this chunk
+        float[] currentMel = computeMelFrames(buf);
 
+        long chunkStartMs = totalSamplesProcessed * 1000L / SR;
+        totalSamplesProcessed += NEW_SAMPLES_PER_CHUNK;
+        long chunkEndMs = totalSamplesProcessed * 1000L / SR;
+
+        // Stateless inference (ts-vad-android approach):
+        // 1. Reset LSTM state to prevent drift
+        Arrays.fill(h, 0f);
+        Arrays.fill(c, 0f);
+        // 2. Warmup: replay previous chunk to prime LSTM (result discarded)
+        if (hasContext) {
+            inferVad(buildInput(contextMelBuf));
+        }
+        // 3. Actual inference on current chunk
+        float targetProb = inferVad(buildInput(currentMel));
+
+        // Save current mel frames as context for next chunk's warmup
+        System.arraycopy(currentMel, 0, contextMelBuf, 0, currentMel.length);
+        hasContext = true;
+
+        updateHysteresis(targetProb, chunkStartMs, chunkEndMs);
+    }
+
+    /** Compute 25 log-mel frames from a 4240-sample audio buffer. */
+    private float[] computeMelFrames(short[] buf) {
+        float[] mel = new float[VAD_CHUNK_FRAMES * N_MELS];
+        float[] powerSpec = new float[N_BINS];
         for (int t = 0; t < VAD_CHUNK_FRAMES; t++) {
             int startSample = t * HOP_LENGTH;
-
-            // Power spectrum at N_BINS frequencies
             for (int k = 0; k < N_BINS; k++) {
                 float re = 0f, im = 0f;
                 int base = k * N_FFT;
@@ -270,33 +296,27 @@ public class PersonalVadProcessor {
                 }
                 powerSpec[k] = re * re + im * im;
             }
-
-            // Mel filterbank → log10
-            int frameBase = t * (N_MELS + EMBED_DIM);
+            int frameBase = t * N_MELS;
             for (int m = 0; m < N_MELS; m++) {
                 float val = 0f;
                 int fbBase = m * N_BINS;
                 for (int k = 0; k < N_BINS; k++) val += melFilterbank[fbBase + k] * powerSpec[k];
-                inputFlat[frameBase + m] = (float) Math.log10(Math.max(val, 1e-6f));
+                mel[frameBase + m] = (float) Math.log10(Math.max(val, 1e-6f));
             }
-
-            // Append speaker embedding
-            System.arraycopy(speakerEmbedding, 0, inputFlat, frameBase + N_MELS, EMBED_DIM);
         }
+        return mel;
+    }
 
-        long chunkStartMs = totalSamplesProcessed * 1000L / SR;
-        totalSamplesProcessed += NEW_SAMPLES_PER_CHUNK;
-        long chunkEndMs = totalSamplesProcessed * 1000L / SR;
-
-        float targetProb = inferVad(inputFlat);
-        updateHysteresis(targetProb, chunkStartMs, chunkEndMs);
-
-        chunkCount++;
-        if (chunkCount >= RESET_INTERVAL_CHUNKS) {
-            Arrays.fill(h, 0f);
-            Arrays.fill(c, 0f);
-            chunkCount = 0;
+    /** Concatenate mel frames with speaker embedding → [VAD_CHUNK_FRAMES, N_MELS+EMBED_DIM]. */
+    private float[] buildInput(float[] melFrames) {
+        float[] input = new float[VAD_CHUNK_FRAMES * (N_MELS + EMBED_DIM)];
+        for (int t = 0; t < VAD_CHUNK_FRAMES; t++) {
+            int srcBase = t * N_MELS;
+            int dstBase = t * (N_MELS + EMBED_DIM);
+            System.arraycopy(melFrames, srcBase, input, dstBase, N_MELS);
+            System.arraycopy(speakerEmbedding, 0, input, dstBase + N_MELS, EMBED_DIM);
         }
+        return input;
     }
 
     private float inferVad(float[] inputFlat) {
@@ -306,7 +326,6 @@ public class PersonalVadProcessor {
                 FloatBuffer.wrap(inputFlat),
                 new long[]{1, VAD_CHUNK_FRAMES, N_MELS + EMBED_DIM});
 
-            // LSTM state: flatten [LSTM_LAYERS, 1, LSTM_HIDDEN] into a 3-D float array
             float[][][] hArr = new float[LSTM_LAYERS][1][LSTM_HIDDEN];
             float[][][] cArr = new float[LSTM_LAYERS][1][LSTM_HIDDEN];
             for (int l = 0; l < LSTM_LAYERS; l++) {
@@ -323,11 +342,9 @@ public class PersonalVadProcessor {
 
             OrtSession.Result result = vadSession.run(inputs);
 
-            // logits: [1, 25, 3]
             float[][][] logits = (float[][][]) result.get("logits").get().getValue();
-            float[] lastLogit = logits[0][VAD_CHUNK_FRAMES - 1]; // last frame
+            float[] lastLogit = logits[0][VAD_CHUNK_FRAMES - 1];
 
-            // Update LSTM state
             float[][][] hn = (float[][][]) result.get("hn").get().getValue();
             float[][][] cn = (float[][][]) result.get("cn").get().getValue();
             for (int l = 0; l < LSTM_LAYERS; l++) {
@@ -356,13 +373,13 @@ public class PersonalVadProcessor {
 
     private void updateHysteresis(float prob, long startMs, long endMs) {
         if (!inMyVoice) {
-            if (prob >= THRESHOLD_ON) {
+            if (prob >= thresholdOn) {
                 inMyVoice = true;
                 segmentStartMs = startMs;
                 hangoverCount = 0;
             }
         } else {
-            if (prob < THRESHOLD_OFF) {
+            if (prob < thresholdOff) {
                 hangoverCount++;
                 if (hangoverCount > HANGOVER_FRAMES) {
                     segments.add(new long[]{segmentStartMs, startMs});
@@ -378,10 +395,6 @@ public class PersonalVadProcessor {
 
     // ── Package-accessible helpers for SpeakerEnrollment ───────────────────
 
-    /**
-     * Compute power mel-spectrogram frame (no log) for one 400-sample window
-     * starting at buf[startSample]. Used by SpeakerEnrollment for Resemblyzer.
-     */
     static float[] computePowerMelFrame(short[] buf, int startSample,
                                         float[] cosT, float[] sinT, float[] melFB) {
         float[] power = new float[N_BINS];

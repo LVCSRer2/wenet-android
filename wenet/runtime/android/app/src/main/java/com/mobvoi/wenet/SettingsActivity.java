@@ -10,7 +10,10 @@ import android.widget.EditText;
 import android.widget.SeekBar;
 import android.widget.TextView;
 import android.widget.Toast;
+import androidx.appcompat.app.AlertDialog;
 import androidx.appcompat.app.AppCompatActivity;
+import java.io.File;
+import java.util.List;
 
 public class SettingsActivity extends AppCompatActivity {
 
@@ -160,6 +163,14 @@ public class SettingsActivity extends AppCompatActivity {
             @Override public void onStopTrackingTouch(SeekBar sb) {}
         });
 
+        // Enrollment section
+        TextView enrollmentStatusText = findViewById(R.id.enrollmentStatusText);
+        File embFile = new File(getFilesDir(), "speaker_embedding.bin");
+        updateEnrollmentStatus(enrollmentStatusText, embFile);
+
+        Button enrollButton = findViewById(R.id.enrollButton);
+        enrollButton.setOnClickListener(v -> showEnrollmentDialog(enrollmentStatusText, embFile));
+
         Button saveButton = findViewById(R.id.saveButton);
         saveButton.setOnClickListener(v -> {
             String openaiKey = openaiApiKeyEditText.getText().toString().trim();
@@ -210,5 +221,50 @@ public class SettingsActivity extends AppCompatActivity {
             Toast.makeText(this, "Saved", Toast.LENGTH_SHORT).show();
             finish();
         });
+    }
+
+    private void updateEnrollmentStatus(TextView statusText, File embFile) {
+        if (embFile.exists()) {
+            java.text.SimpleDateFormat sdf = new java.text.SimpleDateFormat(
+                "yyyy-MM-dd HH:mm", java.util.Locale.getDefault());
+            statusText.setText("등록됨: " + sdf.format(new java.util.Date(embFile.lastModified())));
+        } else {
+            statusText.setText("미등록");
+        }
+    }
+
+    private void showEnrollmentDialog(TextView statusText, File embFile) {
+        List<RecordingManager.SearchResult> recordings =
+            RecordingManager.searchRecordings(this, "");
+        if (recordings.isEmpty()) {
+            Toast.makeText(this, "녹음이 없습니다", Toast.LENGTH_SHORT).show();
+            return;
+        }
+
+        String[] items = new String[recordings.size()];
+        for (int i = 0; i < recordings.size(); i++) {
+            RecordingManager.SearchResult sr = recordings.get(i);
+            String preview = sr.preview.length() > 40 ? sr.preview.substring(0, 40) + "..." : sr.preview;
+            items[i] = sr.name + "  " + preview;
+        }
+
+        new AlertDialog.Builder(this)
+            .setTitle("내 목소리만 담긴 녹음 선택")
+            .setItems(items, (dialog, which) -> {
+                String name = recordings.get(which).name;
+                Toast.makeText(this, "등록 중...", Toast.LENGTH_SHORT).show();
+                SpeakerEnrollment.enroll(this, name, new SpeakerEnrollment.Callback() {
+                    @Override public void onSuccess() {
+                        updateEnrollmentStatus(statusText, embFile);
+                        Toast.makeText(SettingsActivity.this,
+                            "등록 완료!", Toast.LENGTH_SHORT).show();
+                    }
+                    @Override public void onError(String message) {
+                        Toast.makeText(SettingsActivity.this,
+                            "등록 실패: " + message, Toast.LENGTH_LONG).show();
+                    }
+                });
+            })
+            .show();
     }
 }

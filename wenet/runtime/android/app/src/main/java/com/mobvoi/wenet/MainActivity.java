@@ -63,7 +63,8 @@ public class MainActivity extends AppCompatActivity {
 
   private final int MY_PERMISSIONS_RECORD_AUDIO = 1;
   private static final String LOG_TAG = "WENET";
-  private static final int SAMPLE_RATE = 8000;
+  private static final int SAMPLE_RATE = 8000;       // ASR / VAD / visualization sample rate
+  private static final int RECORD_SAMPLE_RATE = 16000; // AudioRecord sample rate (for PersonalVAD)
   private static final int MAX_QUEUE_SIZE = 2500;
   private static final int PLAYBACK_UPDATE_MS = 50;
   private static final String PREFS_NAME = "wenet_settings";
@@ -94,6 +95,9 @@ public class MainActivity extends AppCompatActivity {
   // Silero VAD
   private SileroVad sileroVad;
   private boolean useVad = false;
+
+  // Personal VAD
+  private PersonalVadProcessor personalVad = null;
 
   // Bluetooth SCO
   private AudioManager audioManager;
@@ -369,6 +373,23 @@ public class MainActivity extends AppCompatActivity {
         try { realtimeEncoder.start(audioOutPath, codec); } catch (Exception e) {
           Log.e(LOG_TAG, "Encoder start failed: " + e.getMessage());
         }
+        // Initialize PersonalVadProcessor if speaker embedding exists
+        File embFile = new File(getFilesDir(), "speaker_embedding.bin");
+        if (embFile.exists()) {
+          try {
+            personalVad = new PersonalVadProcessor(this,
+                ai.onnxruntime.OrtEnvironment.getEnvironment());
+            if (!personalVad.loadSpeakerEmbedding(embFile)) {
+              personalVad.release();
+              personalVad = null;
+            }
+          } catch (Exception e) {
+            Log.e(LOG_TAG, "PersonalVadProcessor init failed: " + e.getMessage());
+            personalVad = null;
+          }
+        } else {
+          personalVad = null;
+        }
         Recognize.reset();
         cachedConfirmedText = new StringBuilder();
         cachedInProgressSentence = new StringBuilder();
@@ -613,7 +634,7 @@ public class MainActivity extends AppCompatActivity {
         try { Thread.sleep(300); } catch (InterruptedException ignored) {}
       }
 
-      miniBufferSize = AudioRecord.getMinBufferSize(SAMPLE_RATE,
+      miniBufferSize = AudioRecord.getMinBufferSize(RECORD_SAMPLE_RATE,
           AudioFormat.CHANNEL_IN_MONO,
           AudioFormat.ENCODING_PCM_16BIT);
       if (miniBufferSize == AudioRecord.ERROR || miniBufferSize == AudioRecord.ERROR_BAD_VALUE) {
@@ -622,7 +643,7 @@ public class MainActivity extends AppCompatActivity {
       }
       try {
         record = new AudioRecord(MediaRecorder.AudioSource.MIC,
-            SAMPLE_RATE,
+            RECORD_SAMPLE_RATE,
             AudioFormat.CHANNEL_IN_MONO,
             AudioFormat.ENCODING_PCM_16BIT,
             miniBufferSize);
@@ -847,21 +868,30 @@ public class MainActivity extends AppCompatActivity {
       final long UI_UPDATE_INTERVAL_MS = 500;
       while (startRecord || bufferQueue.size() > 0) {
         try {
-          short[] data = bufferQueue.take();
+          short[] data = bufferQueue.take(); // 16 kHz samples
+
+          // Feed PersonalVad with native 16 kHz
+          if (personalVad != null && personalVad.isReady()) {
+            personalVad.process(data, data.length);
+          }
+
+          // Downsample 16 kHz → 8 kHz for SileroVad / Recognize / visualization
+          short[] data8k = downsample2to1(data);
+
           // VAD processing first (to get prob before visualization)
           if (useVad && sileroVad.isInitialized()) {
-            sileroVad.process(data, data.length, vadCallback);
+            sileroVad.process(data8k, data8k.length, vadCallback);
             ((VadProbView) findViewById(R.id.vadProbView)).setCurrentProb(sileroVad.getLastProb());
           } else {
-            Recognize.acceptWaveform(data);
+            Recognize.acceptWaveform(data8k);
           }
-          // Feed all visualizations with same sample count for sync
+          // Feed all visualizations with 8 kHz data (consistent with existing timing)
           if (useSpectrogram) {
-            ((SpectrogramView) findViewById(R.id.spectrogramView)).addSamples(data, data.length);
+            ((SpectrogramView) findViewById(R.id.spectrogramView)).addSamples(data8k, data8k.length);
           } else {
-            ((VoiceRectView) findViewById(R.id.voiceRectView)).addSamples(data, data.length);
+            ((VoiceRectView) findViewById(R.id.voiceRectView)).addSamples(data8k, data8k.length);
           }
-          ((VadProbView) findViewById(R.id.vadProbView)).addSamples(data.length);
+          ((VadProbView) findViewById(R.id.vadProbView)).addSamples(data8k.length);
           long now = System.currentTimeMillis();
           boolean endpointFired = Recognize.hasNewEndpoint();
           if (endpointFired || now - lastUiUpdate >= UI_UPDATE_INTERVAL_MS) {
@@ -878,6 +908,9 @@ public class MainActivity extends AppCompatActivity {
         sileroVad.flush(vadCallback);
         sileroVad.flushRemainingAsSkipped(vadCallback);
       }
+      if (personalVad != null && personalVad.isReady()) {
+        personalVad.flush();
+      }
 
       // Final UI update after loop ends
       updateLiveDisplayIncremental();
@@ -891,6 +924,11 @@ public class MainActivity extends AppCompatActivity {
         } else {
           // Save result.json with timed result
           saveTimedResult();
+          // Save personal VAD segments
+          if (personalVad != null) {
+            saveMyVoiceSegments(currentRecordingName, personalVad.getSegments());
+            personalVad.reset();
+          }
           // Build timestamped text for copy & Slack
           try {
             timestampedResult = KaraokeController.buildTimestampedTextFromJson(Recognize.getTimedResult(), recordingStartOfDayMs);
@@ -1165,6 +1203,34 @@ public class MainActivity extends AppCompatActivity {
     }
   }
 
+  /** Save Personal VAD segments as [[startMs, endMs], ...] JSON array. */
+  private void saveMyVoiceSegments(String recordingName, java.util.List<long[]> segs) {
+    if (recordingName == null || segs == null) return;
+    try {
+      JSONArray arr = new JSONArray();
+      for (long[] seg : segs) {
+        JSONArray entry = new JSONArray();
+        entry.put(seg[0]);
+        entry.put(seg[1]);
+        arr.put(entry);
+      }
+      String path = RecordingManager.getMyVoiceSegmentsPath(this, recordingName);
+      FileOutputStream fos = new FileOutputStream(path);
+      fos.write(arr.toString().getBytes("UTF-8"));
+      fos.close();
+      Log.i(LOG_TAG, "Saved " + segs.size() + " my-voice segments to " + path);
+    } catch (Exception e) {
+      Log.e(LOG_TAG, "Error saving my-voice segments: " + e.getMessage());
+    }
+  }
+
+  /** 2:1 downsampling: take every other sample (16 kHz → 8 kHz). */
+  private static short[] downsample2to1(short[] src) {
+    short[] dst = new short[src.length / 2];
+    for (int i = 0; i < dst.length; i++) dst[i] = src[i * 2];
+    return dst;
+  }
+
   /** Build live display using delta APIs: only new tokens from native, O(1) JNI cost. */
   private void updateLiveDisplayIncremental() {
     try {
@@ -1360,6 +1426,7 @@ public class MainActivity extends AppCompatActivity {
     int durMs = (int) Math.min(durationMs, Integer.MAX_VALUE);
 
     karaokeController.load(this, recordingName);
+    karaokeController.loadMyVoiceSegments(this, recordingName);
     timestampedResult = karaokeController.buildTimestampedText(recordingStartOfDayMs);
 
     LinearLayout playbackLayout = findViewById(R.id.playbackLayout);

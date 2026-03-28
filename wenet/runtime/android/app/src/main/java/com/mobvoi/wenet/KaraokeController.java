@@ -38,6 +38,32 @@ public class KaraokeController {
   private BackgroundColorSpan currentBgSpan = null;
   private ForegroundColorSpan currentFgSpan = null;
 
+  // Personal VAD segments: [[startMs, endMs], ...] — null means no data (show all black)
+  private long[][] myVoiceSegments = null;
+
+  /** Load Personal VAD segments from my_voice_segments.json for the given recording. */
+  public void loadMyVoiceSegments(Context context, String recordingName) {
+    myVoiceSegments = null;
+    try {
+      File f = new File(RecordingManager.getMyVoiceSegmentsPath(context, recordingName));
+      if (!f.exists()) return;
+      FileInputStream fis = new FileInputStream(f);
+      byte[] data = new byte[(int) f.length()];
+      fis.read(data);
+      fis.close();
+      JSONArray arr = new JSONArray(new String(data, "UTF-8"));
+      myVoiceSegments = new long[arr.length()][2];
+      for (int i = 0; i < arr.length(); i++) {
+        JSONArray seg = arr.getJSONArray(i);
+        myVoiceSegments[i][0] = seg.getLong(0);
+        myVoiceSegments[i][1] = seg.getLong(1);
+      }
+    } catch (Exception e) {
+      android.util.Log.e("KaraokeController", "loadMyVoiceSegments error: " + e.getMessage());
+      myVoiceSegments = null;
+    }
+  }
+
   /** Load word spans from result.json for the given recording. */
   public void load(Context context, String recordingName) {
     wordSpans = new ArrayList<>();
@@ -99,6 +125,14 @@ public class KaraokeController {
         karaokeSpanStarts[i] = karaokeSSB.length();
         karaokeSSB.append(ws.word);
         karaokeSpanEnds[i] = karaokeSSB.length();
+      }
+      // Apply gray color if Personal VAD data available and this word is NOT my voice
+      if (myVoiceSegments != null && karaokeSpanEnds[i] > karaokeSpanStarts[i]) {
+        if (!isMyVoiceMs(ws.startMs, ws.endMs)) {
+          karaokeSSB.setSpan(new ForegroundColorSpan(Color.LTGRAY),
+              karaokeSpanStarts[i], karaokeSpanEnds[i],
+              android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+        }
       }
     }
     textView.setText(karaokeSSB, TextView.BufferType.SPANNABLE);
@@ -252,6 +286,21 @@ public class KaraokeController {
   }
 
   public List<WordSpan> getWordSpans() { return wordSpans; }
+
+  /** Binary search: returns true if [startMs, endMs) overlaps any my-voice segment. */
+  private boolean isMyVoiceMs(int startMs, int endMs) {
+    if (myVoiceSegments == null || myVoiceSegments.length == 0) return false;
+    int lo = 0, hi = myVoiceSegments.length - 1;
+    while (lo <= hi) {
+      int mid = (lo + hi) / 2;
+      long segStart = myVoiceSegments[mid][0];
+      long segEnd = myVoiceSegments[mid][1];
+      if (endMs <= segStart) { hi = mid - 1; }
+      else if (startMs >= segEnd) { lo = mid + 1; }
+      else { return true; } // overlap found
+    }
+    return false;
+  }
 
   public static String formatTimeMs(int ms) {
     int totalSec = ms / 1000;

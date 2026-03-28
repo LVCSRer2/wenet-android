@@ -256,12 +256,35 @@
         android:inputType="textUri"
         android:singleLine="true" />
 
+    <TextView
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="내 목소리 등록"
+        android:textSize="16sp"
+        android:layout_marginTop="24dp"
+        android:layout_marginBottom="8dp" />
+
+    <TextView
+        android:id="@+id/enrollmentStatusText"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="미등록"
+        android:textSize="13sp"
+        android:layout_marginBottom="8dp" />
+
+    <Button
+        android:id="@+id/enrollButton"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="녹음에서 등록"
+        android:layout_marginBottom="16dp" />
+
     <Button
         android:id="@+id/saveButton"
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
         android:text="Save"
-        android:layout_marginTop="16dp" />
+        android:layout_marginTop="8dp" />
 
 </LinearLayout>
 </ScrollView>

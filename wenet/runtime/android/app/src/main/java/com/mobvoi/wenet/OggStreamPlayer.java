@@ -14,13 +14,13 @@ import java.util.concurrent.BlockingQueue;
 
 /**
  * Streams OGG/Opus audio without full pre-decode.
- * MediaExtractor + MediaCodec → BlockingQueue → AudioTrack (8kHz mono PCM).
- * 48kHz decoder output is decimated 6:1 → 8kHz.
+ * MediaExtractor + MediaCodec → BlockingQueue → AudioTrack (16kHz mono PCM).
+ * 48kHz decoder output is decimated 3:1 → 16kHz.
  */
 public class OggStreamPlayer {
 
   private static final String TAG = "OggStreamPlayer";
-  private static final int OUTPUT_SAMPLE_RATE = 8000;
+  private static final int OUTPUT_SAMPLE_RATE = 16000;
   // Sentinel: empty array signals decoder thread finished
   private static final byte[] EOF_SENTINEL = new byte[0];
   // Queue capacity: ~20 chunks × 4096 bytes = ~80KB buffer
@@ -48,7 +48,7 @@ public class OggStreamPlayer {
   // Position tracking
   private volatile long playbackStartMs = 0;
   private volatile long trackStartFrames = 0; // AudioTrack head at playback start
-  private int decimation = 6; // default 48000/8000
+  private int decimation = 3; // default 48000/16000
 
   private long totalDurationMs = 0;
   private long totalDurationUs = 0;

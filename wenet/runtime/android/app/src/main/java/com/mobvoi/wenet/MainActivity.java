@@ -284,7 +284,8 @@ public class MainActivity extends AppCompatActivity {
     Button button = findViewById(R.id.button);
     button.setEnabled(false);
 
-    showModelSelectionDialog();
+    loadModel("full");
+    showEnrollmentDialog();
 
     // Visualization preference
     useSpectrogram = "spectrogram".equals(
@@ -485,14 +486,87 @@ public class MainActivity extends AppCompatActivity {
     }
   }
 
-  private void showModelSelectionDialog() {
-    String[] items = {"Full (비양자화)", "Quantized (양자화)"};
-    String[] values = {"full", "quant"};
+  // Fields for in-app enrollment recording
+  private android.media.AudioRecord enrollRecorder = null;
+  private volatile boolean enrollRecording = false;
+  private final java.util.List<short[]> enrollChunks = new java.util.ArrayList<>();
+
+  private void showEnrollmentDialog() {
     new AlertDialog.Builder(this)
-        .setTitle("모델 선택")
+        .setTitle("내 목소리 등록")
+        .setMessage("Personal VAD를 사용하려면 내 목소리를 등록해야 합니다.\n지금 등록하시겠습니까?")
         .setCancelable(false)
-        .setItems(items, (dialog, which) -> loadModel(values[which]))
+        .setPositiveButton("지금 등록", (d, w) -> startEnrollmentRecording())
+        .setNegativeButton("나중에", null)
         .show();
+  }
+
+  private void startEnrollmentRecording() {
+    int minBuf = android.media.AudioRecord.getMinBufferSize(16000,
+        android.media.AudioFormat.CHANNEL_IN_MONO,
+        android.media.AudioFormat.ENCODING_PCM_16BIT);
+    enrollRecorder = new android.media.AudioRecord(
+        android.media.MediaRecorder.AudioSource.MIC, 16000,
+        android.media.AudioFormat.CHANNEL_IN_MONO,
+        android.media.AudioFormat.ENCODING_PCM_16BIT,
+        minBuf * 4);
+    enrollChunks.clear();
+    enrollRecording = true;
+    enrollRecorder.startRecording();
+    new Thread(() -> {
+      short[] buf = new short[minBuf / 2];
+      while (enrollRecording) {
+        int read = enrollRecorder.read(buf, 0, buf.length);
+        if (read > 0) {
+          short[] chunk = new short[read];
+          System.arraycopy(buf, 0, chunk, 0, read);
+          enrollChunks.add(chunk);
+        }
+      }
+    }, "enroll-record").start();
+
+    new AlertDialog.Builder(this)
+        .setTitle("녹음 중...")
+        .setMessage("내 목소리로 말씀해 주세요.\n완료 버튼을 누르면 등록됩니다.")
+        .setCancelable(false)
+        .setPositiveButton("등록 완료", (d, w) -> stopAndEnroll())
+        .setNegativeButton("취소", (d, w) -> stopEnrollRecorder())
+        .show();
+  }
+
+  private void stopEnrollRecorder() {
+    enrollRecording = false;
+    if (enrollRecorder != null) {
+      enrollRecorder.stop();
+      enrollRecorder.release();
+      enrollRecorder = null;
+    }
+    enrollChunks.clear();
+  }
+
+  private void stopAndEnroll() {
+    enrollRecording = false;
+    if (enrollRecorder != null) {
+      enrollRecorder.stop();
+      enrollRecorder.release();
+      enrollRecorder = null;
+    }
+    int total = 0;
+    for (short[] ch : enrollChunks) total += ch.length;
+    short[] pcm = new short[total];
+    int pos = 0;
+    for (short[] ch : enrollChunks) { System.arraycopy(ch, 0, pcm, pos, ch.length); pos += ch.length; }
+    enrollChunks.clear();
+
+    Toast.makeText(this, "등록 중...", Toast.LENGTH_SHORT).show();
+    SpeakerEnrollment.enrollFromPcm(this, pcm, new SpeakerEnrollment.Callback() {
+      @Override public void onSuccess() {
+        Toast.makeText(MainActivity.this, "등록 완료!", Toast.LENGTH_SHORT).show();
+      }
+      @Override public void onError(String message) {
+        Toast.makeText(MainActivity.this, "등록 실패: " + message, Toast.LENGTH_LONG).show();
+      }
+    });
   }
 
   private void loadModel(String modelType) {

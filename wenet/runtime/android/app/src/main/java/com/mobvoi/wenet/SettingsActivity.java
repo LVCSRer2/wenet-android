@@ -2,6 +2,9 @@ package com.mobvoi.wenet;
 
 import android.content.Intent;
 import android.content.SharedPreferences;
+import android.media.AudioFormat;
+import android.media.AudioRecord;
+import android.media.MediaRecorder;
 import android.os.Bundle;
 import android.widget.Button;
 import android.widget.CheckBox;
@@ -13,9 +16,14 @@ import android.widget.Toast;
 import androidx.appcompat.app.AlertDialog;
 import androidx.appcompat.app.AppCompatActivity;
 import java.io.File;
+import java.util.ArrayList;
 import java.util.List;
 
 public class SettingsActivity extends AppCompatActivity {
+
+    private AudioRecord enrollRecorder = null;
+    private volatile boolean enrollRecording = false;
+    private final List<short[]> enrollChunks = new ArrayList<>();
 
     private static final String PREFS_NAME = "wenet_settings";
     private static final String KEY_WEBHOOK_URL = "slack_webhook_url";
@@ -168,7 +176,7 @@ public class SettingsActivity extends AppCompatActivity {
         // Personal VAD Activation Threshold: SeekBar 0~100 → 0.00~1.00
         SeekBar personalVadActivationSeekBar = findViewById(R.id.personalVadActivationSeekBar);
         TextView personalVadActivationLabel = findViewById(R.id.personalVadActivationLabel);
-        int savedActivation = prefs.getInt(KEY_PERSONAL_VAD_ACTIVATION, 80); // default 0.80
+        int savedActivation = prefs.getInt(KEY_PERSONAL_VAD_ACTIVATION, 90); // default 0.90
         personalVadActivationSeekBar.setProgress(savedActivation);
         personalVadActivationLabel.setText(String.format("Activation Threshold: %.2f", savedActivation / 100f));
         personalVadActivationSeekBar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
@@ -199,7 +207,7 @@ public class SettingsActivity extends AppCompatActivity {
         updateEnrollmentStatus(enrollmentStatusText, embFile);
 
         Button enrollButton = findViewById(R.id.enrollButton);
-        enrollButton.setOnClickListener(v -> showEnrollmentDialog(enrollmentStatusText, embFile));
+        enrollButton.setOnClickListener(v -> startEnrollmentRecording(enrollmentStatusText, embFile));
 
         Button saveButton = findViewById(R.id.saveButton);
         saveButton.setOnClickListener(v -> {
@@ -255,6 +263,76 @@ public class SettingsActivity extends AppCompatActivity {
         });
     }
 
+    private void startEnrollmentRecording(TextView statusText, File embFile) {
+        int minBuf = AudioRecord.getMinBufferSize(16000,
+            AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT);
+        enrollRecorder = new AudioRecord(
+            MediaRecorder.AudioSource.MIC, 16000,
+            AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT,
+            minBuf * 4);
+
+        enrollChunks.clear();
+        enrollRecording = true;
+        enrollRecorder.startRecording();
+
+        new Thread(() -> {
+            short[] buf = new short[minBuf / 2];
+            while (enrollRecording) {
+                int read = enrollRecorder.read(buf, 0, buf.length);
+                if (read > 0) {
+                    short[] chunk = new short[read];
+                    System.arraycopy(buf, 0, chunk, 0, read);
+                    enrollChunks.add(chunk);
+                }
+            }
+        }, "enroll-record").start();
+
+        new AlertDialog.Builder(this)
+            .setTitle("녹음 중...")
+            .setMessage("내 목소리로 말씀해 주세요.\n완료 버튼을 누르면 등록됩니다.")
+            .setPositiveButton("등록 완료", (dialog, which) -> stopAndEnroll(statusText, embFile))
+            .setNegativeButton("취소", (dialog, which) -> stopEnrollRecorder())
+            .setCancelable(false)
+            .show();
+    }
+
+    private void stopEnrollRecorder() {
+        enrollRecording = false;
+        if (enrollRecorder != null) {
+            enrollRecorder.stop();
+            enrollRecorder.release();
+            enrollRecorder = null;
+        }
+        enrollChunks.clear();
+    }
+
+    private void stopAndEnroll(TextView statusText, File embFile) {
+        enrollRecording = false;
+        if (enrollRecorder != null) {
+            enrollRecorder.stop();
+            enrollRecorder.release();
+            enrollRecorder = null;
+        }
+
+        int total = 0;
+        for (short[] ch : enrollChunks) total += ch.length;
+        short[] pcm = new short[total];
+        int pos = 0;
+        for (short[] ch : enrollChunks) { System.arraycopy(ch, 0, pcm, pos, ch.length); pos += ch.length; }
+        enrollChunks.clear();
+
+        Toast.makeText(this, "등록 중...", Toast.LENGTH_SHORT).show();
+        SpeakerEnrollment.enrollFromPcm(this, pcm, new SpeakerEnrollment.Callback() {
+            @Override public void onSuccess() {
+                updateEnrollmentStatus(statusText, embFile);
+                Toast.makeText(SettingsActivity.this, "등록 완료!", Toast.LENGTH_SHORT).show();
+            }
+            @Override public void onError(String message) {
+                Toast.makeText(SettingsActivity.this, "등록 실패: " + message, Toast.LENGTH_LONG).show();
+            }
+        });
+    }
+
     private void updateEnrollmentStatus(TextView statusText, File embFile) {
         if (embFile.exists()) {
             java.text.SimpleDateFormat sdf = new java.text.SimpleDateFormat(
@@ -265,38 +343,4 @@ public class SettingsActivity extends AppCompatActivity {
         }
     }
 
-    private void showEnrollmentDialog(TextView statusText, File embFile) {
-        List<RecordingManager.SearchResult> recordings =
-            RecordingManager.searchRecordings(this, "");
-        if (recordings.isEmpty()) {
-            Toast.makeText(this, "녹음이 없습니다", Toast.LENGTH_SHORT).show();
-            return;
-        }
-
-        String[] items = new String[recordings.size()];
-        for (int i = 0; i < recordings.size(); i++) {
-            RecordingManager.SearchResult sr = recordings.get(i);
-            String preview = sr.preview.length() > 40 ? sr.preview.substring(0, 40) + "..." : sr.preview;
-            items[i] = sr.name + "  " + preview;
-        }
-
-        new AlertDialog.Builder(this)
-            .setTitle("내 목소리만 담긴 녹음 선택")
-            .setItems(items, (dialog, which) -> {
-                String name = recordings.get(which).name;
-                Toast.makeText(this, "등록 중...", Toast.LENGTH_SHORT).show();
-                SpeakerEnrollment.enroll(this, name, new SpeakerEnrollment.Callback() {
-                    @Override public void onSuccess() {
-                        updateEnrollmentStatus(statusText, embFile);
-                        Toast.makeText(SettingsActivity.this,
-                            "등록 완료!", Toast.LENGTH_SHORT).show();
-                    }
-                    @Override public void onError(String message) {
-                        Toast.makeText(SettingsActivity.this,
-                            "등록 실패: " + message, Toast.LENGTH_LONG).show();
-                    }
-                });
-            })
-            .show();
-    }
 }

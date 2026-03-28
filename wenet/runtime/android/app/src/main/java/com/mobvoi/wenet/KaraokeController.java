@@ -38,12 +38,12 @@ public class KaraokeController {
   private BackgroundColorSpan currentBgSpan = null;
   private ForegroundColorSpan currentFgSpan = null;
 
-  // Personal VAD segments: [[startMs, endMs], ...] — null means no data (show all black)
-  private long[][] myVoiceSegments = null;
+  // Personal VAD prob timeline: [[startMs, endMs, prob], ...] — null means no data
+  private float[][] probTimeline = null;
 
-  /** Load Personal VAD segments from my_voice_segments.json for the given recording. */
+  /** Load Personal VAD prob timeline from my_voice_segments.json for the given recording. */
   public void loadMyVoiceSegments(Context context, String recordingName) {
-    myVoiceSegments = null;
+    probTimeline = null;
     try {
       File f = new File(RecordingManager.getMyVoiceSegmentsPath(context, recordingName));
       if (!f.exists()) return;
@@ -52,15 +52,16 @@ public class KaraokeController {
       fis.read(data);
       fis.close();
       JSONArray arr = new JSONArray(new String(data, "UTF-8"));
-      myVoiceSegments = new long[arr.length()][2];
+      probTimeline = new float[arr.length()][3];
       for (int i = 0; i < arr.length(); i++) {
         JSONArray seg = arr.getJSONArray(i);
-        myVoiceSegments[i][0] = seg.getLong(0);
-        myVoiceSegments[i][1] = seg.getLong(1);
+        probTimeline[i][0] = (float) seg.getLong(0);
+        probTimeline[i][1] = (float) seg.getLong(1);
+        probTimeline[i][2] = seg.length() > 2 ? (float) seg.getDouble(2) : 0f;
       }
     } catch (Exception e) {
       android.util.Log.e("KaraokeController", "loadMyVoiceSegments error: " + e.getMessage());
-      myVoiceSegments = null;
+      probTimeline = null;
     }
   }
 
@@ -126,13 +127,12 @@ public class KaraokeController {
         karaokeSSB.append(ws.word);
         karaokeSpanEnds[i] = karaokeSSB.length();
       }
-      // Apply gray color if Personal VAD data available and this word is NOT my voice
-      if (myVoiceSegments != null && karaokeSpanEnds[i] > karaokeSpanStarts[i]) {
-        if (!isMyVoiceMs(ws.startMs, ws.endMs)) {
-          karaokeSSB.setSpan(new ForegroundColorSpan(Color.LTGRAY),
-              karaokeSpanStarts[i], karaokeSpanEnds[i],
-              android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
-        }
+      // Apply grayscale color based on Personal VAD target probability
+      if (probTimeline != null && karaokeSpanEnds[i] > karaokeSpanStarts[i]) {
+        int color = probToColor(getTargetProb(ws.startMs));
+        karaokeSSB.setSpan(new ForegroundColorSpan(color),
+            karaokeSpanStarts[i], karaokeSpanEnds[i],
+            android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
       }
     }
     textView.setText(karaokeSSB, TextView.BufferType.SPANNABLE);
@@ -287,19 +287,27 @@ public class KaraokeController {
 
   public List<WordSpan> getWordSpans() { return wordSpans; }
 
-  /** Binary search: returns true if [startMs, endMs) overlaps any my-voice segment. */
-  private boolean isMyVoiceMs(int startMs, int endMs) {
-    if (myVoiceSegments == null || myVoiceSegments.length == 0) return false;
-    int lo = 0, hi = myVoiceSegments.length - 1;
+  /** Return target probability for the given word start time (binary search). */
+  private float getTargetProb(int wordStartMs) {
+    if (probTimeline == null || probTimeline.length == 0) return 1.0f;
+    int lo = 0, hi = probTimeline.length - 1;
     while (lo <= hi) {
       int mid = (lo + hi) / 2;
-      long segStart = myVoiceSegments[mid][0];
-      long segEnd = myVoiceSegments[mid][1];
-      if (endMs <= segStart) { hi = mid - 1; }
-      else if (startMs >= segEnd) { lo = mid + 1; }
-      else { return true; } // overlap found
+      if (wordStartMs < (long) probTimeline[mid][0]) { hi = mid - 1; }
+      else if (wordStartMs >= (long) probTimeline[mid][1]) { lo = mid + 1; }
+      else { return probTimeline[mid][2]; }
     }
-    return false;
+    return 0.0f;
+  }
+
+  /** Map target probability to color (>=0.9=red, else grayscale, 0.0=#DDDDDD). */
+  private static int probToColor(float prob) {
+    if      (prob >= 0.9f) return 0xFFFF0000;
+    else if (prob >= 0.7f) return 0xFF333333;
+    else if (prob >= 0.5f) return 0xFF666666;
+    else if (prob >= 0.3f) return 0xFF999999;
+    else if (prob >= 0.1f) return 0xFFCCCCCC;
+    else                   return 0xFFDDDDDD;
   }
 
   public static String formatTimeMs(int ms) {

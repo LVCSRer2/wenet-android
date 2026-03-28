@@ -384,7 +384,7 @@ public class MainActivity extends AppCompatActivity {
               personalVad = null;
             } else {
               android.content.SharedPreferences p = getSharedPreferences(PREFS_NAME, MODE_PRIVATE);
-              float activation = p.getInt("personal_vad_activation", 80) / 100f;
+              float activation = p.getInt("personal_vad_activation", 90) / 100f;
               float deactivation = p.getInt("personal_vad_deactivation", 70) / 100f;
               personalVad.setThresholds(activation, deactivation);
             }
@@ -934,7 +934,7 @@ public class MainActivity extends AppCompatActivity {
           saveTimedResult();
           // Save personal VAD segments
           if (personalVad != null) {
-            saveMyVoiceSegments(currentRecordingName, personalVad.getSegments());
+            saveMyVoiceSegments(currentRecordingName, personalVad.getProbTimeline());
             personalVad.reset();
           }
           // Build timestamped text for copy & Slack
@@ -1211,22 +1211,23 @@ public class MainActivity extends AppCompatActivity {
     }
   }
 
-  /** Save Personal VAD segments as [[startMs, endMs], ...] JSON array. */
-  private void saveMyVoiceSegments(String recordingName, java.util.List<long[]> segs) {
-    if (recordingName == null || segs == null) return;
+  /** Save Personal VAD prob timeline as [[startMs, endMs, prob], ...] JSON array. */
+  private void saveMyVoiceSegments(String recordingName, java.util.List<float[]> timeline) {
+    if (recordingName == null || timeline == null) return;
     try {
       JSONArray arr = new JSONArray();
-      for (long[] seg : segs) {
-        JSONArray entry = new JSONArray();
-        entry.put(seg[0]);
-        entry.put(seg[1]);
-        arr.put(entry);
+      for (float[] entry : timeline) {
+        JSONArray e = new JSONArray();
+        e.put((long) entry[0]);
+        e.put((long) entry[1]);
+        e.put((double) entry[2]);
+        arr.put(e);
       }
       String path = RecordingManager.getMyVoiceSegmentsPath(this, recordingName);
       FileOutputStream fos = new FileOutputStream(path);
       fos.write(arr.toString().getBytes("UTF-8"));
       fos.close();
-      Log.i(LOG_TAG, "Saved " + segs.size() + " my-voice segments to " + path);
+      Log.i(LOG_TAG, "Saved " + timeline.size() + " prob entries to " + path);
     } catch (Exception e) {
       Log.e(LOG_TAG, "Error saving my-voice segments: " + e.getMessage());
     }
@@ -1267,9 +1268,10 @@ public class MainActivity extends AppCompatActivity {
           } else {
             int wordStart = cachedInProgressSpannable.length();
             cachedInProgressSpannable.append(w);
-            if (personalVad != null && personalVad.isReady() && !isTargetSpeaker(startMs)) {
+            if (personalVad != null && personalVad.isReady()) {
+              int color = probToColor(getTargetProb(startMs));
               cachedInProgressSpannable.setSpan(
-                  new ForegroundColorSpan(0xFFDDDDDD),
+                  new ForegroundColorSpan(color),
                   wordStart, wordStart + w.length(),
                   Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
             }
@@ -1327,13 +1329,23 @@ public class MainActivity extends AppCompatActivity {
     }
   }
 
-  /** Check if the word at wordStartMs belongs to the enrolled target speaker. */
-  private boolean isTargetSpeaker(int wordStartMs) {
-    if (personalVad == null || !personalVad.isReady()) return true;
-    for (long[] seg : personalVad.getSegments()) {
-      if (wordStartMs >= seg[0] && wordStartMs < seg[1]) return true;
+  /** Return target speaker probability at the given word start time. */
+  private float getTargetProb(int wordStartMs) {
+    if (personalVad == null || !personalVad.isReady()) return 1.0f;
+    for (float[] entry : personalVad.getProbTimeline()) {
+      if (wordStartMs >= (long) entry[0] && wordStartMs < (long) entry[1]) return entry[2];
     }
-    return false;
+    return 0.0f;
+  }
+
+  /** Map target probability to color (>=0.9=red, else grayscale, 0.0=#DDDDDD). */
+  private static int probToColor(float prob) {
+    if      (prob >= 0.9f) return 0xFFFF0000;
+    else if (prob >= 0.7f) return 0xFF333333;
+    else if (prob >= 0.5f) return 0xFF666666;
+    else if (prob >= 0.3f) return 0xFF999999;
+    else if (prob >= 0.1f) return 0xFFCCCCCC;
+    else                   return 0xFFDDDDDD;
   }
 
   private String buildLiveDisplay() {

@@ -55,7 +55,7 @@ public class PersonalVadProcessor {
     private static final int LSTM_HIDDEN = 64;
 
     // Hysteresis
-    private float thresholdOn = 0.8f;
+    private float thresholdOn = 0.9f;
     private float thresholdOff = 0.7f;
     private static final int HANGOVER_FRAMES = 4;
 
@@ -100,6 +100,7 @@ public class PersonalVadProcessor {
 
     // Results
     private final List<long[]> segments = new ArrayList<>(); // each entry: [startMs, endMs]
+    private final List<float[]> probTimeline = new ArrayList<>(); // each entry: [startMs, endMs, prob]
 
     public PersonalVadProcessor(Context context, OrtEnvironment ortEnv) {
         this.ortEnv = ortEnv;
@@ -231,6 +232,10 @@ public class PersonalVadProcessor {
         return segments;
     }
 
+    public List<float[]> getProbTimeline() {
+        return probTimeline;
+    }
+
     public void reset() {
         accumLen = 0;
         Arrays.fill(overlapBuf, (short) 0);
@@ -242,6 +247,7 @@ public class PersonalVadProcessor {
         hangoverCount = 0;
         segmentStartMs = -1;
         segments.clear();
+        probTimeline.clear();
         totalSamplesProcessed = 0;
     }
 
@@ -285,6 +291,7 @@ public class PersonalVadProcessor {
         System.arraycopy(currentMel, 0, contextMelBuf, 0, currentMel.length);
         hasContext = true;
 
+        probTimeline.add(new float[]{chunkStartMs, chunkEndMs, targetProb});
         updateHysteresis(targetProb, chunkStartMs, chunkEndMs);
     }
 

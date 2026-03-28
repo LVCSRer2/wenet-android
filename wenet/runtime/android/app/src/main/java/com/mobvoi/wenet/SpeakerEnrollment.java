@@ -45,6 +45,94 @@ public class SpeakerEnrollment {
         void onError(String message);
     }
 
+    /** Enroll directly from raw 16 kHz mono PCM (no file decoding step). */
+    public static void enrollFromPcm(Context context, short[] pcm, Callback callback) {
+        new Thread(() -> {
+            try {
+                if (pcm == null || pcm.length < N_FFT) {
+                    postError(callback, "녹음이 너무 짧습니다");
+                    return;
+                }
+
+                OrtEnvironment ortEnv = OrtEnvironment.getEnvironment();
+                PersonalVadProcessor proc = new PersonalVadProcessor(context, ortEnv);
+
+                int nFrames = (pcm.length - N_FFT) / HOP_LENGTH + 1;
+                if (nFrames < PARTIALS_N_FRAMES) {
+                    proc.release();
+                    postError(callback, "등록용 녹음이 너무 짧습니다 (최소 " +
+                        (PARTIALS_N_FRAMES * HOP_LENGTH / SR) + "초 필요)");
+                    return;
+                }
+
+                float[][] melFrames = new float[nFrames][];
+                for (int i = 0; i < nFrames; i++) {
+                    melFrames[i] = PersonalVadProcessor.computePowerMelFrame(
+                        pcm, i * HOP_LENGTH, proc.cosTable, proc.sinTable, proc.melFilterbank);
+                }
+                proc.release();
+
+                InputStream is = context.getAssets().open("resemblyzer_encoder.onnx");
+                byte[] modelBytes = PersonalVadProcessor.readStream(is);
+                OrtSession.SessionOptions opts = new OrtSession.SessionOptions();
+                opts.setIntraOpNumThreads(1);
+                OrtSession encoderSession = ortEnv.createSession(modelBytes, opts);
+
+                List<float[]> embeddings = new ArrayList<>();
+                for (int start = 0; start + PARTIALS_N_FRAMES <= nFrames; start += PARTIAL_STEP) {
+                    float[] partialFlat = new float[PARTIALS_N_FRAMES * N_MELS];
+                    for (int f = 0; f < PARTIALS_N_FRAMES; f++) {
+                        System.arraycopy(melFrames[start + f], 0, partialFlat, f * N_MELS, N_MELS);
+                    }
+                    OnnxTensor melsTensor = OnnxTensor.createTensor(ortEnv,
+                        java.nio.FloatBuffer.wrap(partialFlat),
+                        new long[]{1, PARTIALS_N_FRAMES, N_MELS});
+                    Map<String, OnnxTensor> inputs = new HashMap<>();
+                    inputs.put("mels", melsTensor);
+                    OrtSession.Result result = encoderSession.run(inputs);
+                    Object embValue = result.get("embedding").get().getValue();
+                    float[] emb = extractEmbedding(embValue);
+                    if (emb != null) embeddings.add(emb);
+                    result.close();
+                    melsTensor.close();
+                }
+                encoderSession.close();
+
+                if (embeddings.isEmpty()) {
+                    postError(callback, "임베딩 추출 실패");
+                    return;
+                }
+
+                float[] avgEmb = new float[EMBED_DIM];
+                for (float[] emb : embeddings) {
+                    for (int i = 0; i < EMBED_DIM; i++) avgEmb[i] += emb[i];
+                }
+                for (int i = 0; i < EMBED_DIM; i++) avgEmb[i] /= embeddings.size();
+
+                float norm = 0f;
+                for (float v : avgEmb) norm += v * v;
+                norm = (float) Math.sqrt(norm);
+                if (norm > 1e-8f) {
+                    for (int i = 0; i < EMBED_DIM; i++) avgEmb[i] /= norm;
+                }
+
+                ByteBuffer bb = ByteBuffer.allocate(EMBED_DIM * 4).order(ByteOrder.LITTLE_ENDIAN);
+                for (float v : avgEmb) bb.putFloat(v);
+                File outFile = new File(context.getFilesDir(), "speaker_embedding.bin");
+                FileOutputStream fos = new FileOutputStream(outFile);
+                fos.write(bb.array());
+                fos.close();
+
+                Log.i(TAG, "Enrollment complete (from PCM): " + embeddings.size() + " partials");
+                new Handler(Looper.getMainLooper()).post(callback::onSuccess);
+
+            } catch (Exception e) {
+                Log.e(TAG, "Enrollment failed: " + e.getMessage());
+                postError(callback, e.getMessage());
+            }
+        }, "speaker-enrollment").start();
+    }
+
     public static void enroll(Context context, String recordingName, Callback callback) {
         new Thread(() -> {
             try {

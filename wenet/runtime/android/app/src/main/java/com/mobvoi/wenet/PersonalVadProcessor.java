@@ -24,11 +24,9 @@ import ai.onnxruntime.OrtSession;
  * Processes 16 kHz mono PCM and detects segments where the enrolled speaker is talking.
  * Uses personal_vad.onnx (stateful 2-layer LSTM, 3-class: silence / non-target / target).
  *
- * Stateless sliding-window approach (ts-vad-android style):
- *   - Before each 250ms chunk: reset LSTM h/c to zero
- *   - Warmup: replay previous chunk's mel features (updates h/c)
- *   - Infer: run on current chunk (uses warmed-up h/c)
- * This prevents LSTM state drift over long recordings.
+ * Stateful approach with periodic reset:
+ *   - LSTM h/c carries over across 250ms chunks (stateful)
+ *   - Every 3 seconds, h/c is reset to zero to prevent long-term drift
  *
  * Call process() for each incoming PCM chunk (16 kHz).
  * Call flush() when recording ends, then getSegments() for the result.
@@ -74,18 +72,18 @@ public class PersonalVadProcessor {
     private OrtSession vadSession = null;
     private boolean initialized = false;
 
-    // LSTM state — flattened [LSTM_LAYERS × LSTM_HIDDEN] (reset each chunk in stateless mode)
+    // LSTM state — flattened [LSTM_LAYERS × LSTM_HIDDEN] (stateful, reset every STATE_RESET_MS)
     private final float[] h = new float[LSTM_LAYERS * LSTM_HIDDEN];
     private final float[] c = new float[LSTM_LAYERS * LSTM_HIDDEN];
+
+    // Stateful mode: reset LSTM state every 3 seconds to prevent drift
+    private static final long STATE_RESET_MS = 3000;
+    private long lastResetMs = 0;
 
     // Audio accumulation buffer
     private final short[] overlapBuf = new short[OVERLAP];       // tail of previous chunk
     private final short[] accumBuf = new short[NEW_SAMPLES_PER_CHUNK];
     private int accumLen = 0;
-
-    // Context buffer: mel frames from the previous chunk (for LSTM warmup)
-    private final float[] contextMelBuf = new float[VAD_CHUNK_FRAMES * N_MELS];
-    private boolean hasContext = false;
 
     // Timing (in 16 kHz samples)
     private long totalSamplesProcessed = 0;
@@ -241,8 +239,7 @@ public class PersonalVadProcessor {
         Arrays.fill(overlapBuf, (short) 0);
         Arrays.fill(h, 0f);
         Arrays.fill(c, 0f);
-        Arrays.fill(contextMelBuf, 0f);
-        hasContext = false;
+        lastResetMs = 0;
         inMyVoice = false;
         hangoverCount = 0;
         segmentStartMs = -1;
@@ -275,21 +272,14 @@ public class PersonalVadProcessor {
         totalSamplesProcessed += NEW_SAMPLES_PER_CHUNK;
         long chunkEndMs = totalSamplesProcessed * 1000L / SR;
 
-        // Stateless inference (ts-vad-android approach):
-        // 1. Reset LSTM state to prevent drift
-        Arrays.fill(h, 0f);
-        Arrays.fill(c, 0f);
-        // 2. Warmup: replay previous chunk to prime LSTM (result discarded)
-        if (hasContext) {
-            inferVad(buildInput(contextMelBuf));
+        // Stateful inference: carry h/c across chunks, reset every STATE_RESET_MS
+        if (chunkStartMs - lastResetMs >= STATE_RESET_MS) {
+            Arrays.fill(h, 0f);
+            Arrays.fill(c, 0f);
+            lastResetMs = chunkStartMs;
         }
-        // 3. Actual inference on current chunk
         float targetProb = inferVad(buildInput(currentMel));
         lastTargetProb = targetProb;
-
-        // Save current mel frames as context for next chunk's warmup
-        System.arraycopy(currentMel, 0, contextMelBuf, 0, currentMel.length);
-        hasContext = true;
 
         probTimeline.add(new float[]{chunkStartMs, chunkEndMs, targetProb});
         updateHysteresis(targetProb, chunkStartMs, chunkEndMs);

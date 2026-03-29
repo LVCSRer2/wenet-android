@@ -77,7 +77,7 @@ public class PersonalVadProcessor {
     private final float[] c = new float[LSTM_LAYERS * LSTM_HIDDEN];
 
     // Stateful mode: reset LSTM state every 3 seconds to prevent drift
-    private static final long STATE_RESET_MS = 3000;
+    private static final long STATE_RESET_MS = 30000;
     private long lastResetMs = 0;
 
     // Audio accumulation buffer
